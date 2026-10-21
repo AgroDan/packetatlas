@@ -96,11 +96,11 @@ targets:
 		got = append(got, s.ID+":"+s.Building+":"+s.Discovered)
 	}
 	want := []string{
-		"prod/api:office:",                   // configured target first
+		"prod/api:auto:",                     // configured target first
 		"prod/pg:datacenter:kubernetes",      // statefulset of postgres
-		"prod/web:office:kubernetes",         // plain deployment
+		"prod/web:auto:kubernetes",           // plain deployment
 		"payments/checkout:tower:kubernetes", // annotations
-		"shop/cart:office:kubernetes",
+		"shop/cart:auto:kubernetes",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("targets = %v\nwant      %v", got, want)
@@ -146,13 +146,13 @@ func TestGuessBuilding(t *testing.T) {
 	cases := map[string]string{
 		"db":           "datacenter",
 		"blog-db":      "datacenter",
-		"api":          "office",
+		"api":          "auto",
 		"edge-gateway": "tower",
-		"mailer":       "office",
+		"mailer":       "auto",
 		"celery-beat":  "factory",
 	}
 	for name, want := range cases {
-		if got := guessBuilding("office", name, nil); got != want {
+		if got := guessBuilding("auto", name, nil); got != want {
 			t.Errorf("%s: got %s, want %s", name, got, want)
 		}
 	}

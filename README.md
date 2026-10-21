@@ -4,7 +4,7 @@ A network monitor whose UI is a 16-bit isometric city. Every service you monitor
 
 - **Targets** (buildings) are declared in YAML, or found by opt-in **discovery**, and grouped into **neighborhoods** (see below).
 - **Cars**: inbound cars (rx) drive in and pull into the building; outbound cars (tx) pull out and drive off. Most trips are local, and some come in from or leave toward the edge of the map ("the internet"). Busy services get queues.
-- **Kubernetes / Docker buildings** get one floor per pod / container; lit windows are ready ones.
+- **Kubernetes / Docker buildings** get one floor per pod / container; lit windows are ready ones. Unless you choose a building, each gets one of five styles picked from its id, so the city looks mixed and stays the same between reloads: offices, brick apartment blocks with water towers, pitched-roof houses (they turn into apartments past three floors), art-deco towers with a setback and spire, and modern blocks with solar, garden or helipad roofs.
 - **Status**: a green, amber or red map pin, plus:
   - **degraded** → a construction site: unfinished top floors as bare steel frame, scaffolding, a tower crane with a moving hook, traffic cones and an amber flasher
   - **down** → on fire: scorched walls, flames from the roof and windows, smoke and embers, and a fire engine out front with flashing lights spraying the roof
@@ -82,14 +82,14 @@ discovery:
 - A declared target for the same workload (same namespace and deployment/statefulset/daemonset, or same compose project and service) replaces the discovered one, so you can tune a building by hand. Declared neighborhoods keep their colour for discovered buildings.
 - Discovered buildings carry a "discovered" badge in the side panel. Discovery is off in `-demo` mode.
 
-Buildings are guessed from the workload name and images: databases and caches (postgres, redis, mongo, …) and statefulsets are datacenters, gateways and proxies (ingress, traefik, envoy, …) are towers, workers and queues are factories, daemonsets are shops, everything else is an office. Override with Kubernetes annotations or Docker labels:
+Buildings are guessed from the workload name and images: databases and caches (postgres, redis, mongo, …) and statefulsets are datacenters, gateways and proxies (ingress, traefik, envoy, …) are towers, workers and queues are factories, daemonsets are shops, and everything else is `auto` (a mix of styles). Override with Kubernetes annotations or Docker labels:
 
 | Annotation / label             | Effect                                                |
 |--------------------------------|-------------------------------------------------------|
 | `packetatlas.io/ignore: "true"`   | never discover this workload                       |
 | `packetatlas.io/discover: "true"` | opt in, when `require_annotation`/`require_label` is set |
 | `packetatlas.io/name`             | building label                                     |
-| `packetatlas.io/building`         | `office`, `tower`, `datacenter`, `factory`, `shop`, `radio` |
+| `packetatlas.io/building`         | any building below                                 |
 | `packetatlas.io/neighborhood`     | place it in a named neighborhood instead           |
 | `packetatlas.io/color`            | building colour                                    |
 
@@ -141,13 +141,13 @@ The pod runs as non-root on a read-only filesystem with every capability dropped
 
 | Block        | Measures                                                                 | Default building |
 |--------------|--------------------------------------------------------------------------|------------------|
-| `kubernetes` | pod readiness vs desired replicas; per-pod rx/tx bytes/s from the kubelet | `office`         |
-| `docker`     | container running/healthy; per-container rx/tx bytes/s from Engine stats  | `office`         |
+| `kubernetes` | pod readiness vs desired replicas; per-pod rx/tx bytes/s from the kubelet | `auto`           |
+| `docker`     | container running/healthy; per-container rx/tx bytes/s from Engine stats  | `auto`           |
 | `ping`       | ICMP echo, loss and RTT                                                  | `radio`          |
 | `http`       | status code (default 2xx/3xx or `expect_status`), optional `contains`    | `shop`           |
 | `tcp`        | connect time                                                             | `datacenter`     |
 
-Buildings: `office`, `tower`, `datacenter`, `factory`, `shop`, `radio`.
+Buildings: `auto`, `office`, `apartment`, `house`, `deco`, `modern`, `tower`, `datacenter`, `factory`, `shop`, `radio`. `auto` picks one of the five multi-storey styles from the target's id.
 
 A target's `type` is inferred from which block it has. Common per-target options are `interval`, `timeout`, `degraded_latency`, `building` and `color`. See `examples/demo.yaml` for every option.
 

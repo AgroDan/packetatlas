@@ -31,7 +31,7 @@ neighborhoods:
 		t.Fatal(err)
 	}
 	ts := cfg.AllTargets()
-	if ts[0].Type != TypeKubernetes || ts[0].Building != "office" || ts[0].Kubernetes.Namespace != "default" {
+	if ts[0].Type != TypeKubernetes || ts[0].Building != "auto" || ts[0].Kubernetes.Namespace != "default" {
 		t.Errorf("kube target not defaulted: %+v", ts[0])
 	}
 	if ts[0].ID != "prod-cluster/api-gateway" {

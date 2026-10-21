@@ -372,7 +372,7 @@ func (k *kubeDiscoverer) discover(ctx context.Context) ([]*config.Target, error)
 			continue
 		}
 		kt := &config.KubeTarget{Namespace: w.namespace}
-		fallback := "office"
+		fallback := "auto"
 		switch w.kind {
 		case "deployment":
 			kt.Deployment = w.name
@@ -479,7 +479,7 @@ func (d *dockerDiscoverer) discover(ctx context.Context) ([]*config.Target, erro
 			continue
 		}
 		t := &config.Target{Name: s.name, Docker: &config.DockerTarget{Project: s.project, Service: s.name}}
-		applyHints(t, l, "office", s.images)
+		applyHints(t, l, "auto", s.images)
 		out = append(out, t)
 	}
 	return out, nil

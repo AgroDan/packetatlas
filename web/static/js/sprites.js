@@ -15,6 +15,13 @@ const LED_ON = hexToRgb('#5cf08a');
 const LED_ALT = hexToRgb('#59b7ff');
 const LED_DOWN = hexToRgb('#ff4a4a');
 const DARK = hexToRgb('#1d2230');
+const STONE = hexToRgb('#e8e0ce');
+const IRON = hexToRgb('#2c2c33');
+const WOOD = hexToRgb('#8a5a32');
+const GOLD = hexToRgb('#d9b45a');
+const GRASS = hexToRgb('#5f9a4a');
+const SOLAR = hexToRgb('#2b3f6b');
+const SHINGLES = ['#b5523b', '#4b5260', '#5b7050', '#7a5236'].map(hexToRgb);
 // Construction site.
 const GIRDER = hexToRgb('#c9562c');
 const POLE = hexToRgb('#a9aeb5');
@@ -33,6 +40,10 @@ const CHAR = hexToRgb('#140f0d');
  */
 export const KINDS = {
   office: { a: 2, b: 2, floorH: 7, min: 1, max: 16, base: 5, perPod: 1, pad: 10 },
+  apartment: { a: 2.25, b: 1.75, floorH: 7, min: 1, max: 16, base: 3, perPod: 1, pad: 14 },
+  house: { a: 1.75, b: 1.75, floorH: 8, min: 1, max: 3, base: 2, perPod: 1, pad: 24 },
+  deco: { a: 2, b: 2, floorH: 6, min: 2, max: 22, base: 7, perPod: 1, pad: 24 },
+  modern: { a: 2.5, b: 2, floorH: 6, min: 1, max: 18, base: 4, perPod: 1, pad: 10 },
   tower: { a: 1.5, b: 1.5, floorH: 6, min: 4, max: 26, base: 12, perPod: 2, pad: 20 },
   datacenter: { a: 2.5, b: 2.5, height: 19, pad: 10 },
   factory: { a: 2.5, b: 2, height: 16, pad: 30 },
@@ -40,12 +51,18 @@ export const KINDS = {
   radio: { a: 1.25, b: 1.25, height: 9, pad: 50 },
 };
 
-/** Derive floors / lit floors from a target status. */
-export function buildingSpec(status) {
-  const kind = KINDS[status.building] ? status.building : 'office';
-  const k = KINDS[kind];
+// Styles for building "auto" (the default for Kubernetes and Docker
+// targets), picked from the target id so a workload always looks the same.
+const AUTO = ['office', 'apartment', 'house', 'deco', 'modern'];
+
+/** Derive the style, floors and lit floors from a target status. */
+export function buildingSpec(status, id = status.id) {
+  let kind = KINDS[status.building] ? status.building : AUTO[strHash(id || '') % AUTO.length];
   // Kubernetes pods and Docker containers each get a floor.
   const hasInstances = status.replicas > 0;
+  // A house that outgrows its floors becomes an apartment block.
+  if (kind === 'house' && hasInstances && status.replicas * KINDS.house.perPod > KINDS.house.max) kind = 'apartment';
+  const k = KINDS[kind];
   const healthFrac = status.state === 'up' ? 1 : status.state === 'degraded' ? 0.5 : 0;
   const frac = hasInstances ? status.ready / status.replicas : healthFrac;
   if (k.height) return { kind, floors: 0, lit: 0, frac, state: status.state };
@@ -193,16 +210,45 @@ function roofPaint(ax, by, rim, fill, seed) {
   };
 }
 
-/** Small box sitting on the main roof at axis-pixel offset (du, dv). */
-function roofBox(c, du, dv, w, d, hh, color, top) {
+/** Small box sitting on the main roof at axis-pixel offset (du, dv), raised by lift. */
+function roofBox(c, du, dv, w, d, hh, color, top, lift = 0) {
   const x = c.ox + (du - dv);
-  const y = c.oy + Math.round((du + dv) / 2) - hh;
+  const y = c.oy + Math.round((du + dv) / 2) - hh - lift;
   rasterBox(c.buf, x, y, w, d, hh, (face, u, v, fw, fh) => {
     if (face === 'top') return top || shade(color, 0.15);
     const fc = faceColor(color, face);
     return edge(face, u, v, fw, fh, fc) || fc;
   });
   return { x, y };
+}
+
+/**
+ * Gable roof over the whole footprint, ridge along the a axis, built from
+ * one-pixel slices that narrow as they rise.
+ */
+function gableRoof(c, rise, color, gable) {
+  const half = c.by / 2;
+  for (let i = 0; i < rise; i++) {
+    const dv = Math.round((i * half) / rise);
+    const d = c.by - 2 * dv;
+    if (d < 1) break;
+    const ridge = i === rise - 1;
+    rasterBox(c.buf, c.ox - dv, c.oy + Math.round(dv / 2) - i - 1, c.ax, d, 1, (face, u, v) => {
+      if (face === 'right') return faceColor(gable, face);
+      if (face === 'left') return i % 2 ? color : shade(color, -0.12);
+      if (ridge) return shade(color, 0.2);
+      return v < d / 2 ? shade(color, -0.3) : shade(color, 0.1);
+    });
+  }
+}
+
+/** Lit, dark or burning window pane; side separates the two walls' patterns. */
+function pane(spec, face, col, floor, topRow, seed, glass = GLASS) {
+  const side = face === 'right' ? 50 : 0;
+  if (spec.state === 'down') return fireWindow(col, floor + side, topRow, seed);
+  const fromBottom = spec.floors - 1 - floor;
+  if (fromBottom < spec.lit && hash2(col, floor + side, seed) > 0.14) return topRow ? LIT_HI : LIT;
+  return faceColor(topRow ? SHEEN : glass, face);
 }
 
 /** Screen position of the roof's centre (axis offset du, dv) in sprite pixels. */
@@ -350,6 +396,189 @@ const BUILDERS = {
     c.buf.set(p.x + 4, p.y - 2 + 2, STEEL);
     meta.smoke = p;
     meta.beacon = { x: p.x, y: p.y - 12 };
+  },
+
+  // Brick walk-up: sash windows with stone sills, a fire escape and a
+  // water tower on the roof.
+  apartment(c, meta) {
+    const { ax, by, h, k, spec, seed, base } = c;
+    const brick = mix(BRICK, base, c.dead ? 0.7 : 0.3);
+    const trim = c.dead ? shade(brick, 0.15) : STONE;
+    const roof = roofPaint(ax, by, shade(trim, -0.15), mix(ROOF, DARK, 0.3), seed);
+    const fx = Math.round(by * 0.3);
+    rasterBox(c.buf, c.ox, c.oy, ax, by, h, (face, u, v, fw, fh) => {
+      if (face === 'top') return roof(u, v);
+      const fc = faceColor(brick, face);
+      const e = edge(face, u, v, fw, fh, fc);
+      if (e) return e;
+      if (v < 3) return faceColor(v === 2 ? shade(trim, -0.2) : trim, face);
+      const fv = v - 3, floor = Math.floor(fv / k.floorH), r = fv % k.floorH;
+      const fromBottom = spec.floors - 1 - floor;
+      // Fire escape on the right wall: a landing and a ladder per floor.
+      if (face === 'right' && fromBottom > 0 && u >= fx && u < fx + 9) {
+        if (r === k.floorH - 1 || (r === k.floorH - 3 && (u - fx) % 2 === 0)) return IRON;
+        if (u - fx === r + 1) return shade(IRON, 0.2);
+      }
+      if (fromBottom === 0 && face === 'left' && Math.abs(u - fw / 2) < 3 && r >= 1) return shade(DARK, 0.1);
+      const wu = u % 6;
+      if (u > 1 && u < fw - 2) {
+        if (r >= 1 && r < 5 && (wu === 2 || wu === 3)) return pane(spec, face, Math.floor(u / 6), floor, r === 1, seed);
+        if (r === 5 && wu >= 1 && wu <= 4) return faceColor(trim, face);
+      }
+      return v % 2 === 0 && hash2(u >> 1, v, seed) < 0.25 ? shade(fc, -0.07) : fc;
+    });
+    meta.smoke = roofPoint(c, ax / 2, by / 2);
+    meta.beacon = { ...roofPoint(c, ax - 10, 10), y: roofPoint(c, ax - 10, 10).y - 18 };
+    if (c.unfinished) return;
+    roofBox(c, 5, by - 11, 6, 6, 4, shade(brick, -0.1));
+    // Water tower: legs, a hooped barrel and a conical cap.
+    const [du, dv, lift] = [ax - 14, 6, 5];
+    for (const [lu, lv] of [[0, 0], [6, 0], [0, 6], [6, 6]]) {
+      const p = roofPoint(c, du + lu, dv + lv);
+      for (let i = 0; i < lift; i++) c.buf.set(p.x, p.y - i, IRON);
+    }
+    const wood = c.dead ? shade(WOOD, -0.4) : WOOD;
+    const x = c.ox + (du - dv), y = c.oy + Math.round((du + dv) / 2) - 8 - lift;
+    rasterBox(c.buf, x, y, 7, 7, 8, (face, u, v, fw, fh) => {
+      if (face === 'top') return shade(wood, 0.1);
+      const fc = faceColor(wood, face);
+      return edge(face, u, v, fw, fh, fc) || (v % 3 === 1 ? shade(fc, -0.3) : fc);
+    });
+    for (let i = 0; i < 3; i++) roofBox(c, du + 1 + i, dv + 1 + i, 5 - 2 * i, 5 - 2 * i, 1, shade(wood, -0.25), null, lift + 8 + i);
+  },
+
+  // Small house: clapboard walls, shuttered windows and a pitched roof.
+  house(c, meta) {
+    const { ax, by, h, k, spec, seed, base } = c;
+    const siding = mix(base, [244, 238, 226], c.dead ? 0.2 : 0.55);
+    const shingle = c.dead ? shade(base, -0.35) : mix(SHINGLES[seed % SHINGLES.length], base, 0.15);
+    const shutter = shade(base, -0.3);
+    rasterBox(c.buf, c.ox, c.oy, ax, by, h, (face, u, v, fw, fh) => {
+      if (face === 'top') return shingle;
+      const fc = faceColor(siding, face);
+      const e = edge(face, u, v, fw, fh, fc);
+      if (e) return e;
+      if (v < 3) return shade(fc, -0.25); // shadow under the eaves
+      const fv = v - 3, floor = Math.floor(fv / k.floorH), r = fv % k.floorH;
+      const fromBottom = spec.floors - 1 - floor;
+      const centres = face === 'left' ? [fw * 0.27, fw * 0.7] : [fw * 0.5];
+      for (const [i, cx] of centres.entries()) {
+        const du = Math.floor(u - cx);
+        if (fromBottom === 0 && face === 'left' && i === 1) {
+          if (du >= -2 && du < 2 && r >= 2) return r === 2 ? shade(siding, 0.4) : shade(base, -0.45);
+          continue;
+        }
+        if (r >= 2 && r < 6) {
+          if (du >= -2 && du < 2) return pane(spec, face, i, floor, r === 2, seed);
+          if (du === -3 || du === 2) return faceColor(shutter, face);
+        }
+      }
+      return r % 2 ? shade(fc, -0.06) : fc;
+    });
+    const rise = Math.round((by / 2) * 0.85);
+    const ridge = roofPoint(c, ax / 2, by / 2);
+    meta.beacon = { x: ridge.x, y: ridge.y - rise - 4 };
+    meta.smoke = ridge;
+    if (c.unfinished) return;
+    const chimney = roofBox(c, ax - 9, 5, 4, 4, rise + 3, shade(BRICK, c.dead ? -0.5 : -0.1), DARK);
+    gableRoof(c, rise, shingle, siding);
+    meta.smoke = chimney;
+  },
+
+  // Art deco: stone piers between window bays, a setback upper storey, a
+  // crown and a spire.
+  deco(c, meta) {
+    const { ax, by, h, k, spec, seed, base } = c;
+    const stone = mix(base, [226, 212, 182], c.dead ? 0.15 : 0.6);
+    const pier = shade(stone, 0.12);
+    const gold = c.dead ? shade(stone, -0.2) : GOLD;
+    const wall = (floorOff, cap, roof) => (face, u, v, fw, fh) => {
+      if (face === 'top') return roof(u, v);
+      const fc = faceColor(stone, face);
+      const e = edge(face, u, v, fw, fh, fc);
+      if (e) return e;
+      if (v < cap) return faceColor(v === 1 ? gold : pier, face);
+      const fv = v - cap, floor = floorOff + Math.floor(fv / k.floorH), r = fv % k.floorH;
+      const fromBottom = spec.floors - 1 - floor;
+      if (fromBottom === 0 && face === 'left' && Math.abs(u - fw / 2) < 4 && r >= 1) return r === 1 ? gold : shade(DARK, 0.1);
+      if (u % 5 === 0 || u < 2 || u > fw - 3) return faceColor(pier, face);
+      if (r === 0) return faceColor(shade(stone, -0.25), face);
+      return pane(spec, face, Math.floor(u / 5), floor, r === 1, seed);
+    };
+    const rim = shade(pier, 0.1), fill = mix(ROOF, stone, 0.3);
+    // The top third of a tall building is set back from the walls below.
+    const nUp = !c.unfinished && spec.floors >= 6 ? Math.round(spec.floors * 0.35) : 0;
+    let top = { x: c.ox, y: c.oy, w: ax, d: by };
+    if (nUp) {
+      const hUp = 3 + nUp * k.floorH, inset = 5;
+      rasterBox(c.buf, c.ox, c.oy + hUp, ax, by, h - hUp, wall(nUp, 0, roofPaint(ax, by, rim, fill, seed)));
+      top = { x: c.ox, y: c.oy + inset, w: ax - 2 * inset, d: by - 2 * inset };
+      rasterBox(c.buf, top.x, top.y, top.w, top.d, hUp, wall(0, 3, roofPaint(top.w, top.d, rim, fill, seed)));
+    } else {
+      rasterBox(c.buf, c.ox, c.oy, ax, by, h, wall(0, 3, roofPaint(ax, by, rim, fill, seed)));
+    }
+    const centre = { x: top.x + (top.w - top.d) / 2, y: top.y + Math.round((top.w + top.d) / 4) };
+    meta.smoke = centre;
+    meta.beacon = { x: centre.x, y: centre.y - 3 };
+    if (c.unfinished) return;
+    // Crown, then a spire with an aviation light.
+    const cw = top.w - 8, cd = top.d - 8;
+    rasterBox(c.buf, top.x, top.y + 4 - 5, cw, cd, 5, (face, u, v, fw, fh) => {
+      if (face === 'top') return pier;
+      const fc = faceColor(pier, face);
+      return edge(face, u, v, fw, fh, fc) || (v === 2 || u % 3 === 1 ? faceColor(gold, face) : fc);
+    });
+    const sx = Math.round(centre.x), sy = centre.y - 5;
+    for (let i = 0; i < 14; i++) {
+      c.buf.set(sx, sy - i, i < 9 ? gold : STEEL);
+      if (i < 4) {
+        c.buf.set(sx - 1, sy - i, shade(gold, 0.2));
+        c.buf.set(sx + 1, sy - i, shade(gold, -0.3));
+      }
+    }
+    meta.beacon = { x: sx, y: sy - 14 };
+  },
+
+  // Modern block: concrete floor slabs between continuous glass ribbons;
+  // a solar or garden roof, or a helipad when it's tall.
+  modern(c, meta) {
+    const { ax, by, h, k, spec, seed, base } = c;
+    const band = mix(base, [240, 240, 236], c.dead ? 0.2 : 0.72);
+    const glass = mix(GLASS, base, 0.2);
+    const plain = roofPaint(ax, by, shade(band, -0.1), mix(ROOF, band, 0.4), seed);
+    const style = c.dead || c.unfinished ? 'plain' : spec.floors >= 8 ? 'helipad' : seed % 2 ? 'garden' : 'solar';
+    const roof = (u, v) => {
+      if (u < 2 || v < 2 || u > ax - 2 || v > by - 2 || style === 'plain') return plain(u, v);
+      if (style === 'solar') {
+        return Math.floor(v) % 6 < 4 && u > 4 && u < ax - 4 ? (Math.floor(u) % 4 === 0 ? shade(SOLAR, 0.25) : SOLAR) : plain(u, v);
+      }
+      if (style === 'garden') return hash2(Math.floor(u / 2), Math.floor(v / 2), seed) < 0.3 ? shade(GRASS, -0.18) : GRASS;
+      const du = u - ax / 2, dv = v - by / 2, R = Math.min(ax, by) / 2 - 4;
+      const ring = Math.abs(Math.hypot(du, dv) - R) < 0.9;
+      const H = Math.abs(du) <= 3 && Math.abs(dv) <= 4 && (Math.abs(du) >= 2 || Math.abs(dv) < 1);
+      return ring || H ? [236, 236, 230] : shade(ROOF, -0.25);
+    };
+    rasterBox(c.buf, c.ox, c.oy, ax, by, h, (face, u, v, fw, fh) => {
+      if (face === 'top') return roof(u, v);
+      const fc = faceColor(band, face);
+      const e = edge(face, u, v, fw, fh, fc);
+      if (e) return e;
+      if (v < 3) return fc;
+      const fv = v - 3, floor = Math.floor(fv / k.floorH), r = fv % k.floorH;
+      const fromBottom = spec.floors - 1 - floor;
+      if (r < 2) return r === 0 ? shade(fc, -0.12) : fc;
+      if (fromBottom === 0 && face === 'left' && Math.abs(u - fw / 2) < 3) return shade(DARK, 0.2);
+      if (u % 6 === 0) return shade(fc, -0.1);
+      return pane(spec, face, Math.floor(u / 6), floor, r === 2, seed, glass);
+    });
+    if (style === 'garden') {
+      const r = rng(seed + 9);
+      for (let i = 0; i < 4; i++) {
+        roofBox(c, Math.round(4 + r() * (ax - 10)), Math.round(4 + r() * (by - 10)), 3, 3, 3, shade(GRASS, -0.1), shade(GRASS, 0.15));
+      }
+    }
+    meta.smoke = roofPoint(c, ax / 2, by / 2);
+    meta.beacon = { ...roofPoint(c, 4, 4), y: roofPoint(c, 4, 4).y - 3 };
   },
 
   radio(c, meta) {

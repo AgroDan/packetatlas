@@ -53,7 +53,7 @@ export class Renderer {
     if (!this.city) return;
     for (const b of this.city.buildings) {
       const st = this.statuses.get(b.id) || { ...b.target, state: 'unknown' };
-      const spec = buildingSpec(st);
+      const spec = buildingSpec(st, b.id);
       const sprite = buildingSprite(spec, b.color, b.id);
       const [a, bb] = sprite.footprint;
       const p = this.city.project(b.lot[0] + (3 - a) / 2, b.lot[1] + (3 - bb) / 2);
@@ -349,7 +349,7 @@ export class Renderer {
       if (b.state === 'degraded') {
         color = '#ffb020';
         on = Math.sin(t * 4) > 0;
-      } else if (b.state === 'up' && (b.spec.kind === 'tower' || b.spec.kind === 'radio')) {
+      } else if (b.state === 'up' && (b.spec.kind === 'tower' || b.spec.kind === 'radio' || b.spec.kind === 'deco')) {
         color = '#ff4d4d';
         on = (t + b.depth * 0.37) % 2 < 0.25;
       }
@@ -466,9 +466,9 @@ export class Renderer {
             });
           }
         }
-      } else if (b.state === 'up' && b.spec.kind === 'factory' && b.sprite.smoke) {
+      } else if (b.state === 'up' && (b.spec.kind === 'factory' || b.spec.kind === 'house') && b.sprite.smoke) {
         const sm = b.sprite.smoke;
-        for (let i = spawn(3); i > 0; i--) {
+        for (let i = spawn(b.spec.kind === 'house' ? 0.8 : 3); i > 0; i--) {
           this.particles.push({
             kind: 'smoke', x: b.drawX + sm.x + rand(-2, 2), y: b.drawY + sm.y - 2, vx: rand(2, 5), vy: -rand(7, 13),
             r0: 2, grow: 2.2, life: 0, max: 2, a0: 0.8, color: '#e8ecef',

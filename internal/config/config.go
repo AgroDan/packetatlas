@@ -337,11 +337,13 @@ const (
 	TypeTCP        = "tcp"
 )
 
-var Buildings = []string{"office", "tower", "datacenter", "factory", "shop", "radio"}
+// Buildings lists the building styles. "auto" lets the UI pick one of
+// office, apartment, house, deco or modern from the target's id.
+var Buildings = []string{"auto", "office", "apartment", "house", "deco", "modern", "tower", "datacenter", "factory", "shop", "radio"}
 
 var defaultBuilding = map[string]string{
-	TypeKubernetes: "office",
-	TypeDocker:     "office",
+	TypeKubernetes: "auto",
+	TypeDocker:     "auto",
 	TypePing:       "radio",
 	TypeHTTP:       "shop",
 	TypeTCP:        "datacenter",

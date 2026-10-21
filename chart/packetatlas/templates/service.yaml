@@ -1,0 +1,16 @@
+{{- if eq .Values.mode "server" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "packetatlas.fullname" . }}
+  labels:
+    {{- include "packetatlas.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.server.service.type }}
+  selector:
+    {{- include "packetatlas.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.server.service.port }}
+      targetPort: http
+{{- end }}

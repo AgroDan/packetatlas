@@ -164,3 +164,100 @@ targets:
 		t.Errorf("top-level targets not drained")
 	}
 }
+
+func TestDiscoveryIsOptIn(t *testing.T) {
+	dir := t.TempDir()
+	_, err := Load(write(t, dir, "none.yaml", `server: { listen: ":1" }`))
+	if err == nil || !strings.Contains(err.Error(), "discovery") {
+		t.Fatalf("empty config without discovery: err = %v, want a hint about discovery", err)
+	}
+
+	cfg, err := Load(write(t, dir, "disc.yaml", `
+discovery:
+  kubernetes: { enabled: true }
+neighborhoods:
+  - name: prod
+    color: "#123456"
+`))
+	if err != nil {
+		t.Fatalf("discovery-only config: %v", err)
+	}
+	k := cfg.Discovery.Kubernetes
+	if !k.Enabled || cfg.Discovery.Docker.Enabled {
+		t.Errorf("enabled flags: %+v", cfg.Discovery)
+	}
+	if len(k.ExcludeNamespaces) != 3 || len(k.Kinds) != 3 || cfg.Discovery.Interval.Duration == 0 {
+		t.Errorf("defaults not applied: %+v", k)
+	}
+	if len(cfg.Neighborhoods) != 0 || cfg.Style("prod") != "#123456" {
+		t.Errorf("styling-only neighborhood should be kept as a style: %+v / %+v", cfg.Neighborhoods, cfg.Styles)
+	}
+
+	cfg, err = Load(write(t, dir, "all.yaml", `
+discovery:
+  kubernetes: { enabled: true, exclude_namespaces: [] }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Discovery.Kubernetes.ExcludeNamespaces) != 0 {
+		t.Errorf("exclude_namespaces: [] should clear the default, got %v", cfg.Discovery.Kubernetes.ExcludeNamespaces)
+	}
+
+	if _, err := Load(write(t, dir, "bad.yaml", `
+discovery:
+  kubernetes: { enabled: true, kinds: [cronjob] }
+`)); err == nil || !strings.Contains(err.Error(), "cronjob") {
+		t.Errorf("bad kind: err = %v", err)
+	}
+}
+
+func TestAgentsConfig(t *testing.T) {
+	dir := t.TempDir()
+	tokenFile := write(t, dir, "tok", "  file-token-0123456789\n")
+	t.Setenv("PA_TOKEN", "env-token-0123456789")
+	cfg, err := Load(write(t, dir, "hub.yaml", `
+agents:
+  - { cluster: a, token_env: PA_TOKEN }
+  - { cluster: b, token_file: `+tokenFile+`, neighborhood_prefix: "" }
+`))
+	if err != nil {
+		t.Fatalf("hub with only agents: %v", err)
+	}
+	a, b := cfg.Agents[0], cfg.Agents[1]
+	if a.Resolved != "env-token-0123456789" || b.Resolved != "file-token-0123456789" {
+		t.Errorf("tokens not resolved: %q %q", a.Resolved, b.Resolved)
+	}
+	if a.Prefix() != "a/" || b.Prefix() != "" || a.StaleAfter.Duration == 0 {
+		t.Errorf("prefix/stale defaults: %q %q %v", a.Prefix(), b.Prefix(), a.StaleAfter)
+	}
+
+	bad := map[string]string{
+		"no token":     `agents: [{ cluster: a }]`,
+		"two tokens":   `agents: [{ cluster: a, token: "0123456789abcdef", token_env: PA_TOKEN }]`,
+		"short":        `agents: [{ cluster: a, token: short }]`,
+		"empty env":    `agents: [{ cluster: a, token_env: PA_UNSET_FOR_TEST }]`,
+		"dup cluster":  `agents: [{ cluster: a, token: "0123456789abcdef" }, { cluster: a, token: "0123456789abcdeg" }]`,
+		"shared token": `agents: [{ cluster: a, token: "0123456789abcdef" }, { cluster: b, token: "0123456789abcdef" }]`,
+	}
+	for name, body := range bad {
+		if _, err := Load(write(t, dir, "bad.yaml", body)); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
+	}
+
+	cfg, err = Load(write(t, dir, "agent.yaml", `
+discovery: { kubernetes: { enabled: true } }
+agent: { hub: "https://atlas.example.com/", cluster: prod, token_env: PA_TOKEN }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Agent.Validate(); err != nil || cfg.Agent.Resolved == "" || cfg.Agent.PushInterval.Duration == 0 {
+		t.Errorf("agent: err=%v %+v", err, cfg.Agent)
+	}
+	cfg.Agent.Hub = "atlas.example.com"
+	if err := cfg.Agent.Validate(); err == nil {
+		t.Error("hub without scheme should fail")
+	}
+}

@@ -1,0 +1,38 @@
+# PacketAtlas with discovery: the map builds itself from what's running.
+#
+#   go run ./cmd/packetatlas -config examples/discovery.yaml
+#
+# Discovery is opt-in per source. Without it, PacketAtlas only shows the
+# targets you declare, and refuses to start with none.
+
+kubernetes:
+  context: ""             # empty = in-cluster, else $KUBECONFIG / ~/.kube/config
+
+discovery:
+  interval: 30s           # how often to rescan for added/removed workloads
+
+  kubernetes:
+    enabled: true
+    # namespaces: [prod, staging]    # default: all namespaces
+    # exclude_namespaces: []         # default: kube-system, kube-public, kube-node-lease
+    # kinds: [deployment, statefulset, daemonset]
+    # require_annotation: true       # only workloads annotated packetatlas.io/discover: "true"
+
+  docker:
+    enabled: true
+    # projects: [blog]               # default: all compose projects
+    # exclude_projects: [scratch]
+    # require_label: true            # only containers labelled packetatlas.io/discover=true
+
+# Declared neighborhoods still style or collect discovered buildings.
+neighborhoods:
+  - name: prod
+    color: "#4f7cc4"
+
+# Declared targets sit alongside discovered ones. A declared workload wins
+# over its discovered twin, so you can tune one by hand.
+targets:
+  - name: Router
+    ping: { host: 192.168.1.1 }
+  - name: Public website
+    http: { url: https://example.com }

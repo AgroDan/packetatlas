@@ -1,0 +1,24 @@
+# PacketAtlas hub: serves the map and accepts pushes from agents.
+#
+#   packetatlas -config examples/hub.yaml
+#
+# Put it behind TLS (a reverse proxy or ingress): agents send their token
+# with every push.
+
+agents:
+  - cluster: prod
+    token_env: PROD_AGENT_TOKEN    # or token_file / token; one token per cluster
+    stale_after: 1m                # grey the cluster out after this long without a push
+  - cluster: edge
+    token_env: EDGE_AGENT_TOKEN
+    neighborhood_prefix: "edge: "  # default "<cluster>/"; "" for none
+
+# Style an agent's neighborhood by its prefixed name.
+neighborhoods:
+  - name: prod/payments
+    color: "#4f7cc4"
+
+# The hub can monitor things itself as well.
+targets:
+  - name: Public website
+    http: { url: https://example.com }

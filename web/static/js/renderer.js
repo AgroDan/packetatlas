@@ -31,7 +31,9 @@ export class Renderer {
   }
 
   setCity(city, traffic) {
-    const first = !this.city;
+    // Fit on the first real map, including after an empty one (discovery
+    // that hasn't found anything yet).
+    const first = !this.city || this.city.buildings.length === 0;
     this.city = city;
     this.traffic = traffic;
     this.ground = city.renderGround();
@@ -552,22 +554,34 @@ export class Renderer {
   }
 
   drawNeighborhoodLabels(ctx, s, ox, oy) {
-    if (this.cam.z > 2) return;
+    // Building names take over from 1.5x (see drawPins).
+    if (this.cam.z >= 1.5) return;
     const dpr = this.dpr;
     const fontPx = Math.round(15 * dpr);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    for (const d of this.city.neighborhoods) {
+    // Bigger neighborhoods claim their spot first; a label that would
+    // overlap one already drawn waits until the user zooms in.
+    const placed = [];
+    const order = [...this.city.neighborhoods].sort((a, b) => b.targets.length - a.targets.length);
+    for (const d of order) {
       // Label sits on the neighborhood's front (bottom) street corner.
-      const p = this.city.project(5 + (d.bx + d.cols / 2) * 8, 5 + (d.by + d.rows) * 8 + 0.5);
+      const p = this.city.project(...this.city.labelAnchor(d));
       const x = p.x * s + ox, y = p.y * s + oy + 14 * dpr;
+      const name = d.name.toUpperCase();
+      const sub = KIND_SUBTITLE[d.kind];
       ctx.font = `700 ${fontPx}px "Pixelify Sans", ui-monospace, monospace`;
+      // Pad the box so neighbours keep a visible gap, not just no overlap.
+      const w = ctx.measureText(name).width + 28 * dpr;
+      const box = { x0: x - w / 2, x1: x + w / 2, y0: y - fontPx, y1: y + fontPx * (sub ? 1.9 : 1) };
+      if (placed.some((o) => box.x0 < o.x1 && o.x0 < box.x1 && box.y0 < o.y1 && o.y0 < box.y1)) continue;
+      placed.push(box);
+
       ctx.lineWidth = 4 * dpr;
       ctx.strokeStyle = 'rgba(15,20,28,0.85)';
-      ctx.strokeText(d.name.toUpperCase(), x, y);
+      ctx.strokeText(name, x, y);
       ctx.fillStyle = d.color;
-      ctx.fillText(d.name.toUpperCase(), x, y);
-      const sub = KIND_SUBTITLE[d.kind];
+      ctx.fillText(name, x, y);
       if (sub) {
         ctx.font = `600 ${Math.round(10 * dpr)}px "Pixelify Sans", ui-monospace, monospace`;
         ctx.lineWidth = 3 * dpr;

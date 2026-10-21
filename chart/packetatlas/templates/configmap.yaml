@@ -1,0 +1,44 @@
+{{- include "packetatlas.validate" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "packetatlas.fullname" . }}
+  labels:
+    {{- include "packetatlas.labels" . | nindent 4 }}
+data:
+  # Loaded as a directory: files merge in name order.
+  00-chart.yaml: |
+    server:
+      listen: ":8080"
+    {{- if eq .Values.mode "agent" }}
+    agent:
+      hub: {{ .Values.agent.hub | quote }}
+      cluster: {{ .Values.agent.cluster | quote }}
+      token_file: /var/run/secrets/packetatlas/token
+      push_interval: {{ .Values.agent.pushInterval }}
+      listen: ":8081"
+      {{- if .Values.agent.caBundle }}
+      ca_file: /etc/packetatlas/ca.crt
+      {{- end }}
+      {{- if .Values.agent.insecureSkipVerify }}
+      insecure_skip_verify: true
+      {{- end }}
+    {{- end }}
+    {{- with .Values.discovery }}
+    discovery:
+      interval: {{ .interval }}
+      kubernetes:
+        enabled: {{ .enabled }}
+        namespaces: {{ .namespaces | toJson }}
+        exclude_namespaces: {{ .excludeNamespaces | toJson }}
+        kinds: {{ .kinds | toJson }}
+        require_annotation: {{ .requireAnnotation }}
+    {{- end }}
+  {{- with .Values.config }}
+  10-values.yaml: |
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- if and (eq .Values.mode "agent") .Values.agent.caBundle }}
+  ca.crt: |
+    {{- .Values.agent.caBundle | nindent 4 }}
+  {{- end }}

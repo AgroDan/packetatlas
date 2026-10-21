@@ -1,0 +1,23 @@
+{{- if eq .Values.mode "agent" }}
+PacketAtlas agent for cluster {{ .Values.agent.cluster | quote }} is pushing to {{ .Values.agent.hub }}.
+
+The hub must list this cluster with the same token:
+
+  agents:
+    - cluster: {{ .Values.agent.cluster }}
+      token_env: ...        # or token / token_file
+
+The pod turns Ready once the hub accepts a push. If it doesn't:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "packetatlas.fullname" . }}
+{{- else }}
+PacketAtlas is running in this cluster.
+{{- if .Values.server.ingress.enabled }}
+
+  Open https://{{ .Values.server.ingress.host }}
+{{- else }}
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "packetatlas.fullname" . }} 8080:{{ .Values.server.service.port }}
+  Open http://localhost:8080
+{{- end }}
+{{- end }}

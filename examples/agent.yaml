@@ -1,0 +1,23 @@
+# PacketAtlas agent: maps this cluster onto a hub elsewhere.
+#
+#   packetatlas agent -config examples/agent.yaml
+#
+# It runs discovery and checks here and pushes the results to the hub over
+# HTTPS. Nothing connects in, and no cluster credentials leave the cluster.
+# In Kubernetes, use the Helm chart in chart/packetatlas instead.
+
+agent:
+  hub: https://atlas.example.com   # the PacketAtlas that serves the map
+  cluster: prod                    # must match a `cluster` under `agents:` on the hub
+  token_env: PACKETATLAS_TOKEN     # or token_file / token (16+ characters)
+  push_interval: 10s
+  # ca_file: /etc/ssl/private-ca.pem
+  # listen: ":8081"                # /healthz and /readyz for probes
+
+discovery:
+  kubernetes: { enabled: true }
+
+# Declared targets are reported too, e.g. checks only reachable in-cluster.
+targets:
+  - name: internal API
+    http: { url: http://api.prod.svc.cluster.local/healthz }

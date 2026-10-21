@@ -30,6 +30,12 @@ kubernetes:
 docker:
   host: ""                # empty = $DOCKER_HOST, else unix:///var/run/docker.sock
 
+# Opt-in discovery of Kubernetes workloads / compose services; see
+# examples/discovery.yaml. Off here, so only the targets below are shown.
+# discovery:
+#   kubernetes: { enabled: true }
+#   docker: { enabled: true }
+
 # prometheus:
 #   url: http://prometheus.monitoring:9090
 

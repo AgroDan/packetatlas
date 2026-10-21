@@ -1,0 +1,95 @@
+# agent:  discover and check this cluster, push to a PacketAtlas hub elsewhere
+#         (outbound HTTPS only; no Service is created).
+# server: run the full map in this cluster.
+mode: agent
+
+image:
+  repository: ghcr.io/agrodan/packetatlas
+  tag: ""                       # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+agent:
+  hub: ""                       # required in agent mode, e.g. https://atlas.example.com
+  cluster: ""                   # required; must match a `cluster` under `agents:` on the hub
+  # The token the hub lists for this cluster. Either set it here (a Secret is
+  # created) or point at an existing Secret.
+  token: ""
+  existingSecret: ""
+  existingSecretKey: token
+  pushInterval: 10s
+  caBundle: ""                  # PEM of a private CA that signed the hub's certificate
+  insecureSkipVerify: false
+
+discovery:
+  enabled: true
+  interval: 30s
+  namespaces: []                # default: all
+  excludeNamespaces: [kube-system, kube-public, kube-node-lease]
+  kinds: [deployment, statefulset, daemonset]
+  requireAnnotation: false      # true: only workloads annotated packetatlas.io/discover: "true"
+
+# Extra PacketAtlas config, merged over the generated one: targets,
+# neighborhoods, defaults, prometheus, and (server mode) agents. Tokens for
+# `agents:` should come from token_env plus extraEnv, not be written here.
+config: {}
+#  targets:
+#    - name: Public site
+#      http: { url: https://example.com }
+#  agents:                      # server mode: clusters allowed to push here
+#    - cluster: edge
+#      token_env: EDGE_TOKEN
+
+extraEnv: []
+#  - name: EDGE_TOKEN
+#    valueFrom: { secretKeyRef: { name: packetatlas-agents, key: edge } }
+
+server:
+  service:
+    type: ClusterIP
+    port: 80
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    host: atlas.example.com
+    tls: []
+    #  - secretName: atlas-tls
+    #    hosts: [atlas.example.com]
+
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 48Mi
+  limits:
+    memory: 256Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+  # Lets the non-root process send ICMP for ping targets.
+  sysctls:
+    - name: net.ipv4.ping_group_range
+      value: "0 2147483647"
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}

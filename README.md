@@ -2,7 +2,7 @@
 
 A network monitor whose UI is a 16-bit isometric city. Every service you monitor is a building; the streets around it fill with cars in proportion to its traffic.
 
-- **Targets** (buildings) are declared in YAML and grouped into **neighborhoods** (see below).
+- **Targets** (buildings) are declared in YAML, or found by opt-in **discovery**, and grouped into **neighborhoods** (see below).
 - **Cars**: inbound cars (rx) drive in and pull into the building; outbound cars (tx) pull out and drive off. Most trips are local, and some come in from or leave toward the edge of the map ("the internet"). Busy services get queues.
 - **Kubernetes / Docker buildings** get one floor per pod / container; lit windows are ready ones.
 - **Status**: a green, amber or red map pin, plus:
@@ -17,6 +17,9 @@ go build -o packetatlas ./cmd/packetatlas
 ./packetatlas -config examples/demo.yaml -demo     # fake data, no cluster needed
 ./packetatlas -config packetatlas.yaml             # real checks
 ./packetatlas -config ./conf.d/                    # directory of *.yaml files
+./packetatlas -config examples/discovery.yaml      # build the map from what's running
+./packetatlas -config examples/hub.yaml            # accept pushes from cluster agents
+./packetatlas agent -config examples/agent.yaml    # push this cluster to a hub
 ```
 
 Open http://localhost:8080. Drag to pan, scroll to zoom, click a building for details, `/` to search. The URL hash deep-links to the selected building.
@@ -51,7 +54,88 @@ targets:                        # placed automatically
     tcp: { address: 192.168.1.10:445 }
 ```
 
-Neighborhood labels on the map say where each one came from ("k8s namespace" or "compose app"). If a namespace and a compose project share a name, they become one neighborhood.
+On the map, neighborhoods with four or more buildings get whole blocks; smaller ones share blocks, one lot per building, with plain paving marking the boundary between them. Neighborhood labels (shown when zoomed out) say where each one came from ("k8s namespace" or "compose app"). If a namespace and a compose project share a name, they become one neighborhood.
+
+## Discovery
+
+Off by default: without it, the map shows only the targets you declare, and a config with no targets is an error. Turn it on per source:
+
+```yaml
+discovery:
+  interval: 30s                 # rescan period
+  kubernetes:
+    enabled: true
+    namespaces: []              # default: all
+    exclude_namespaces: [...]   # default: kube-system, kube-public, kube-node-lease; [] includes them
+    kinds: [deployment, statefulset, daemonset]
+    require_annotation: false   # true: only workloads annotated packetatlas.io/discover: "true"
+  docker:
+    enabled: true
+    projects: []                # default: all compose projects
+    exclude_projects: []
+    require_label: false        # true: only containers labelled packetatlas.io/discover=true
+```
+
+- **Kubernetes**: each deployment, statefulset and daemonset becomes a building in its namespace's neighborhood. Workloads scaled to zero are skipped.
+- **Docker**: each docker-compose service becomes a building in its project's neighborhood. Services whose containers all exited with code 0 count as finished jobs and are skipped; `docker compose down` removes the building, while a crashed or killed service stays and burns.
+- New workloads appear and deleted ones disappear on the next scan. If the API can't be reached, the current buildings stay.
+- A declared target for the same workload (same namespace and deployment/statefulset/daemonset, or same compose project and service) replaces the discovered one, so you can tune a building by hand. Declared neighborhoods keep their colour for discovered buildings.
+- Discovered buildings carry a "discovered" badge in the side panel. Discovery is off in `-demo` mode.
+
+Buildings are guessed from the workload name and images: databases and caches (postgres, redis, mongo, …) and statefulsets are datacenters, gateways and proxies (ingress, traefik, envoy, …) are towers, workers and queues are factories, daemonsets are shops, everything else is an office. Override with Kubernetes annotations or Docker labels:
+
+| Annotation / label             | Effect                                                |
+|--------------------------------|-------------------------------------------------------|
+| `packetatlas.io/ignore: "true"`   | never discover this workload                       |
+| `packetatlas.io/discover: "true"` | opt in, when `require_annotation`/`require_label` is set |
+| `packetatlas.io/name`             | building label                                     |
+| `packetatlas.io/building`         | `office`, `tower`, `datacenter`, `factory`, `shop`, `radio` |
+| `packetatlas.io/neighborhood`     | place it in a named neighborhood instead           |
+| `packetatlas.io/color`            | building colour                                    |
+
+## Agents and the Helm chart
+
+To map a cluster on a PacketAtlas running elsewhere, install the agent in that cluster. It runs discovery and checks locally and pushes the results to the hub (`POST /api/ingest`) every `push_interval`. Connections only go outbound, so the API server isn't exposed and no kubeconfig leaves the cluster. One hub can take any number of clusters.
+
+On the hub, list each cluster with its own token (see `examples/hub.yaml`):
+
+```yaml
+agents:
+  - cluster: prod
+    token_env: PROD_AGENT_TOKEN   # or token_file / token, at least 16 characters
+    stale_after: 1m               # default 1m
+    neighborhood_prefix: "prod/"  # the default, "<cluster>/"; "" for none
+```
+
+Then install the agent in the cluster:
+
+```bash
+helm install packetatlas ./chart/packetatlas -n packetatlas --create-namespace \
+  --set agent.hub=https://atlas.example.com \
+  --set agent.cluster=prod \
+  --set agent.token="$PROD_AGENT_TOKEN"        # or agent.existingSecret
+```
+
+- **On the map:** the agent's neighborhoods appear on the hub as `prod/<namespace>`, and their buildings carry a "cluster prod" badge.
+- **Updates:** each push replaces the cluster's buildings, so deleted workloads disappear. The agent's first push waits for its first discovery scan.
+- **Outages:** if an agent stops pushing for `stale_after`, its buildings go grey (unknown) and show how long it has been silent.
+- **History:** the hub keeps its own history for agent buildings; agents don't send theirs.
+- **Health:** the agent pod is Ready once the hub has accepted a push. `/healthz` and `/readyz` are on `agent.listen` (default `:8081`).
+- **Rejected pushes:** wrong tokens get `401`. A token used with another cluster's name gets `403`. If the agent and hub are on different report versions, the push gets `400` and you upgrade the older side.
+- **Security:** use HTTPS for the hub, because the token goes with every push. The agent warns about plain `http://`. `agent.caBundle` (chart) or `agent.ca_file` trusts a private CA.
+
+The chart can also run the whole map inside the cluster with `--set mode=server`. That adds a Service, plus an optional Ingress (`server.ingress.*`). Chart values:
+
+| Value | Meaning |
+|---|---|
+| `mode` | `agent` (default) or `server` |
+| `agent.hub`, `agent.cluster` | where to push and as which cluster (agent mode, required) |
+| `agent.token` / `agent.existingSecret` (+ `existingSecretKey`) | the cluster's token; mounted as a file |
+| `discovery.*` | `enabled`, `interval`, `namespaces`, `excludeNamespaces`, `kinds`, `requireAnnotation` |
+| `config` | extra PacketAtlas YAML merged over the generated config: targets, neighborhoods, `agents:` for a server-mode hub, … |
+| `extraEnv` | e.g. Secret-backed `token_env` variables for a server-mode hub's `agents:` |
+
+The pod runs as non-root on a read-only filesystem with every capability dropped. It sets `net.ipv4.ping_group_range` so ping targets work without root. It needs read-only RBAC: the ClusterRole above plus `list` on workloads. Build the image with `docker build -t ghcr.io/agrodan/packetatlas:0.1.0 .`.
 
 ## Checks
 
@@ -79,8 +163,10 @@ rules:
     verbs: [get]
   - apiGroups: [apps]
     resources: [deployments, statefulsets, daemonsets]
-    verbs: [get]
+    verbs: [get, list]          # list: only for discovery
 ```
+
+Discovery across all namespaces needs these as a ClusterRole; with `discovery.kubernetes.namespaces` set, a Role in each namespace is enough.
 
 **Docker** containers are selected with `project` (the whole compose app, or narrowed with `service`) or with `container` (an exact name). The client connects to `docker.host` (`unix://`, `tcp://` or `http(s)://`), falling back to `$DOCKER_HOST` and then `/var/run/docker.sock`. Containers that are running and not `unhealthy` or `health: starting` count as ready. Containers that exited with code 0 are treated as finished one-shot jobs and ignored. Host-network containers report no traffic.
 
@@ -104,10 +190,12 @@ Targets without traffic data (ping, plain HTTP/TCP) show a light trickle of cars
 ## Layout
 
 ```
-cmd/packetatlas/      entry point, flags
+cmd/packetatlas/      entry point, flags, `agent` subcommand
 internal/config/      YAML loading, merging, neighborhood grouping, validation
-internal/monitor/     scheduler + history, checkers (kube, docker, ping, http, tcp, prometheus, demo)
-internal/server/      /api/state (JSON), /api/stream (SSE), static UI
+internal/monitor/     scheduler + history, discovery, checkers (kube, docker, ping, http, tcp, prometheus, demo)
+internal/agent/       agent → hub push loop, report format, health endpoints
+internal/server/      /api/state (JSON), /api/stream (SSE), /api/ingest (agent pushes), static UI
+chart/packetatlas/    Helm chart (agent or server mode)
 web/static/           embedded UI (plain ES modules, no build step)
   js/pixel.js         pixel buffer + isometric box rasteriser
   js/city.js          neighborhood/block layout, road grid, BFS paths, ground rendering

@@ -14,6 +14,9 @@ function apply(snap) {
     const city = new City(snap.neighborhoods, snap.targets);
     renderer.setCity(city, new Traffic(city));
   }
+  const empty = document.getElementById('empty');
+  empty.hidden = snap.targets.length > 0;
+  empty.textContent = snap.discovery ? 'Discovering… no workloads found yet.' : 'No targets configured.';
   const byId = new Map(snap.targets.map((t) => [t.id, t]));
   renderer.setStatuses(byId);
   ui.update(snap, byId);

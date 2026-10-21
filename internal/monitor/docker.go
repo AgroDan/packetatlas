@@ -75,6 +75,7 @@ func (d *dockerClient) get(ctx context.Context, path string, out any) error {
 type dockerContainer struct {
 	ID     string            `json:"Id"`
 	Names  []string          `json:"Names"`
+	Image  string            `json:"Image"`
 	State  string            `json:"State"`
 	Status string            `json:"Status"`
 	Labels map[string]string `json:"Labels"`

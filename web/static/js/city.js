@@ -6,6 +6,16 @@ import { PixBuf, rasterBox, hexToRgb, mix, shade, hash2, rng, strHash, AX } from
 export const BLOCK = 8; // road every BLOCK tiles; 7x7 block interior
 const MARGIN = 5; // grass ring around the city
 const LOT = 3; // lot size in tiles; 4 lots per block
+// Neighborhoods smaller than this share blocks with others, one lot each,
+// instead of each claiming a whole (mostly empty) block.
+const SHARE_BELOW = 4;
+// Lot sets (0 TL, 1 TR, 2 BL, 3 BR) a small neighborhood may take in a shared
+// block, by size: always edge-connected, never diagonal.
+const SHAPES = {
+  1: [[0], [1], [2], [3]],
+  2: [[0, 1], [2, 3], [0, 2], [1, 3]],
+  3: [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]],
+};
 const EDGE_H = 14; // depth of the dirt cliff under the map
 
 export const T = { GRASS: 0, ROAD: 1, LOT: 2, PARK: 3, PLAZA: 4 };
@@ -55,26 +65,47 @@ export class City {
   // --- layout -------------------------------------------------------------
 
   layout() {
+    // Big neighborhoods get whole blocks; small ones are first-fit into
+    // shared blocks. Each shared block is laid out where its first member
+    // appears, so config order is roughly kept.
+    const items = []; // { cols, rows, members: [neighborhood] } in blocks
+    let shared = [];
     for (const d of this.neighborhoods) {
-      const nb = Math.max(1, Math.ceil(d.targets.length / 4));
-      d.cols = Math.ceil(Math.sqrt(nb));
-      d.rows = Math.ceil(nb / d.cols);
+      const n = Math.max(1, d.targets.length);
+      if (n >= SHARE_BELOW) {
+        const nb = Math.ceil(n / 4);
+        const cols = Math.ceil(Math.sqrt(nb));
+        items.push({ cols, rows: Math.ceil(nb / cols), members: [d] });
+        continue;
+      }
+      const fits = (b) => SHAPES[n].find((shape) => shape.every((q) => !b.used.has(q)));
+      let blk = shared.find(fits);
+      if (!blk) {
+        blk = { cols: 1, rows: 1, members: [], used: new Set() };
+        shared.push(blk);
+        items.push(blk);
+      }
+      d.shape = fits(blk);
+      for (const q of d.shape) blk.used.add(q);
+      blk.members.push(d);
+      shared = shared.filter((b) => b.used.size < 4);
     }
-    // Shelf-pack neighborhood rectangles (in blocks) into a roughly square city.
-    const total = this.neighborhoods.reduce((s, d) => s + d.cols * d.rows, 0);
-    const widest = Math.max(...this.neighborhoods.map((d) => d.cols));
+
+    // Shelf-pack the items (in blocks) into a roughly square city.
+    const total = items.reduce((s, it) => s + it.cols * it.rows, 0);
+    const widest = Math.max(...items.map((it) => it.cols));
     const maxW = Math.max(widest, Math.ceil(Math.sqrt(total) * 1.3));
     let x = 0, y = 0, shelf = 0, wb = 0;
-    for (const d of this.neighborhoods) {
-      if (x > 0 && x + d.cols > maxW) {
+    for (const it of items) {
+      if (x > 0 && x + it.cols > maxW) {
         x = 0;
         y += shelf;
         shelf = 0;
       }
-      d.bx = x;
-      d.by = y;
-      x += d.cols;
-      shelf = Math.max(shelf, d.rows);
+      it.bx = x;
+      it.by = y;
+      x += it.cols;
+      shelf = Math.max(shelf, it.rows);
       wb = Math.max(wb, x);
     }
     this.wb = wb;
@@ -82,11 +113,41 @@ export class City {
     this.cols = this.wb * BLOCK + 1 + MARGIN * 2;
     this.rows = this.hb * BLOCK + 1 + MARGIN * 2;
 
-    this.blockOwner = new Array(this.wb * this.hb).fill(-1);
-    this.neighborhoods.forEach((d, i) => {
-      for (let j = 0; j < d.rows; j++)
-        for (let k = 0; k < d.cols; k++) this.blockOwner[(d.by + j) * this.wb + d.bx + k] = i;
-    });
+    // Each neighborhood owns a list of lots (quarter blocks), in global lot
+    // coordinates; building n goes on lots[n].
+    this.qw = this.wb * 2;
+    this.lotOwner = new Int16Array(this.qw * this.hb * 2).fill(-1);
+    const index = new Map(this.neighborhoods.map((d, i) => [d, i]));
+    const lotAt = (bx, by, q) => [bx * 2 + (q % 2), by * 2 + Math.floor(q / 2)];
+    for (const it of items) {
+      for (const d of it.members) {
+        d.lots = [];
+        if (!d.shape) {
+          for (let b = 0; b < it.cols * it.rows; b++)
+            for (let q = 0; q < 4; q++) d.lots.push(lotAt(it.bx + (b % it.cols), it.by + Math.floor(b / it.cols), q));
+        } else {
+          for (const q of d.shape) d.lots.push(lotAt(it.bx, it.by, q));
+        }
+        for (const [qx, qy] of d.lots) this.lotOwner[qy * this.qw + qx] = index.get(d);
+      }
+    }
+  }
+
+  /** Owner of global lot (qx, qy), or -1. */
+  ownerOfLot(qx, qy) {
+    return qx < 0 || qy < 0 || qx >= this.qw || qy >= this.hb * 2 ? -1 : this.lotOwner[qy * this.qw + qx];
+  }
+
+  /** Tile position for a neighborhood's label: below the front edge of its lots. */
+  labelAnchor(d) {
+    let x0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [qx, qy] of d.lots) {
+      x0 = Math.min(x0, qx);
+      x1 = Math.max(x1, qx + 1);
+      y1 = Math.max(y1, qy + 1);
+    }
+    // Lot q spans tiles MARGIN + q*4 .. +4 (a road or plaza line follows).
+    return [MARGIN + ((x0 + x1) / 2) * 4, MARGIN + y1 * 4 + 0.5];
   }
 
   idx(x, y) {
@@ -119,11 +180,29 @@ export class City {
         }
         const lx = x - MARGIN, ly = y - MARGIN;
         if (lx < 0 || ly < 0 || lx > this.wb * BLOCK || ly > this.hb * BLOCK) continue; // grass
-        const bx = Math.floor(lx / BLOCK), by = Math.floor(ly / BLOCK);
-        const owner = this.blockOwner[by * this.wb + bx];
-        this.tileNeighborhood[i] = owner;
-        const inLotX = lx % BLOCK !== 4, inLotY = ly % BLOCK !== 4;
-        this.tiles[i] = owner < 0 ? T.PARK : inLotX && inLotY ? T.PARK : T.PLAZA;
+        // Within a block, offsets 1-3 and 5-7 are lots; 4 is a plaza line.
+        // A plaza tile touches 1 (inside a lot row), 2 or 4 (the centre) lots.
+        const ox = lx % BLOCK, oy = ly % BLOCK;
+        const qxs = ox === 4 ? [-1, 0] : [0];
+        const qys = oy === 4 ? [-1, 0] : [0];
+        const qx = Math.floor((lx + (ox === 4 ? 1 : 0)) / 4), qy = Math.floor((ly + (oy === 4 ? 1 : 0)) / 4);
+        const owners = new Set();
+        for (const dx of qxs) for (const dy of qys) {
+          const o = this.ownerOfLot(qx + dx, qy + dy);
+          if (o >= 0) owners.add(o);
+        }
+        if (owners.size === 0) {
+          this.tiles[i] = T.PARK;
+        } else if (ox !== 4 && oy !== 4) {
+          // Inside a lot: park until a building is placed on it.
+          this.tiles[i] = T.PARK;
+          this.tileNeighborhood[i] = [...owners][0];
+        } else {
+          // Plaza paths are tinted by their neighborhood; paths between two
+          // neighborhoods stay plain paving, marking the boundary.
+          this.tiles[i] = T.PLAZA;
+          this.tileNeighborhood[i] = owners.size === 1 ? [...owners][0] : -1;
+        }
       }
     }
 
@@ -143,9 +222,9 @@ export class City {
     this.buildings = [];
     this.neighborhoods.forEach((d, di) => {
       d.targets.forEach((t, n) => {
-        const block = Math.floor(n / 4), lot = n % 4;
-        const bx = d.bx + (block % d.cols), by = d.by + Math.floor(block / d.cols);
-        const col = lot % 2, row = Math.floor(lot / 2);
+        const [qx, qy] = d.lots[n];
+        const bx = qx >> 1, by = qy >> 1;
+        const col = qx % 2, row = qy % 2;
         const ox = MARGIN + bx * BLOCK, oy = MARGIN + by * BLOCK;
         const x0 = ox + 1 + col * 4, y0 = oy + 1 + row * 4;
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/AgroDan/packetatlas/internal/config"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,6 +32,9 @@ func newKubeClient(cfg config.Kubernetes) (*kubeClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kubernetes config: %w", err)
 	}
+	// client-go defaults to 5 req/s, far too few for dozens of targets each
+	// making a couple of requests per check.
+	rc.QPS, rc.Burst = 50, 100
 	cs, err := kubernetes.NewForConfig(rc)
 	if err != nil {
 		return nil, err
@@ -75,7 +79,12 @@ func (k *kubeChecker) Check(ctx context.Context) Result {
 
 	selector, desired, err := k.resolve(ctx)
 	if err != nil {
-		return Result{State: StateDown, Err: err.Error()}
+		// A missing workload is an outage; an API hiccup tells us nothing.
+		state := StateUnknown
+		if apierrors.IsNotFound(err) {
+			state = StateDown
+		}
+		return Result{State: state, Err: err.Error()}
 	}
 	pods, err := k.client.cs.CoreV1().Pods(kt.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {

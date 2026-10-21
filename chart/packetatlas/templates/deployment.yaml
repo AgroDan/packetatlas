@@ -1,0 +1,122 @@
+{{- $agent := eq .Values.mode "agent" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "packetatlas.fullname" . }}
+  labels:
+    {{- include "packetatlas.labels" . | nindent 4 }}
+spec:
+  # State is in memory: one replica (two agents would double-report, two
+  # servers would each show half the pushes).
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "packetatlas.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "packetatlas.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "packetatlas.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: packetatlas
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            {{- if $agent }}
+            - agent
+            {{- end }}
+            - -config
+            - /etc/packetatlas
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            {{- if $agent }}
+            - name: health
+              containerPort: 8081
+            {{- else }}
+            - name: http
+              containerPort: 8080
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ ternary "health" "http" $agent }}
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              # Agent: ready once the hub has accepted a push.
+              path: {{ ternary "/readyz" "/healthz" $agent }}
+              port: {{ ternary "health" "http" $agent }}
+            periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/packetatlas
+              readOnly: true
+            {{- if $agent }}
+            - name: token
+              mountPath: /var/run/secrets/packetatlas
+              readOnly: true
+            {{- end }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "packetatlas.fullname" . }}
+            items:
+              - { key: 00-chart.yaml, path: 00-chart.yaml }
+              {{- if .Values.config }}
+              - { key: 10-values.yaml, path: 10-values.yaml }
+              {{- end }}
+              {{- if and $agent .Values.agent.caBundle }}
+              - { key: ca.crt, path: ca.crt }
+              {{- end }}
+        {{- if $agent }}
+        - name: token
+          secret:
+            secretName: {{ include "packetatlas.tokenSecret" . }}
+            items:
+              - key: {{ ternary .Values.agent.existingSecretKey "token" (not (empty .Values.agent.existingSecret)) }}
+                path: token
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

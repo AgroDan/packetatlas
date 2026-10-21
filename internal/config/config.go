@@ -10,10 +10,14 @@
 //  2. its Kubernetes namespace
 //  3. its docker-compose project
 //  4. the catch-all "Outskirts" neighborhood
+//
+// Discovery (see Discovery) is opt-in. Without it, every building on the map
+// must be declared here, and a config with no targets is an error.
 package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,15 +47,26 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 
 type Config struct {
-	Server        Server         `yaml:"server"`
-	Defaults      Defaults       `yaml:"defaults"`
-	Kubernetes    Kubernetes     `yaml:"kubernetes"`
-	Docker        Docker         `yaml:"docker"`
-	Prometheus    Prometheus     `yaml:"prometheus"`
+	Server     Server     `yaml:"server"`
+	Defaults   Defaults   `yaml:"defaults"`
+	Kubernetes Kubernetes `yaml:"kubernetes"`
+	Docker     Docker     `yaml:"docker"`
+	Prometheus Prometheus `yaml:"prometheus"`
+	Discovery  Discovery  `yaml:"discovery"`
+	// Agent configures `packetatlas agent`, which pushes to a hub instead of
+	// serving the map.
+	Agent Agent `yaml:"agent"`
+	// Agents lists the clusters whose agents may push to this hub.
+	Agents        []AgentSource  `yaml:"agents"`
 	Neighborhoods []Neighborhood `yaml:"neighborhoods"`
 	// Targets are placed into neighborhoods automatically (see package doc).
 	// After Load, every target lives under Neighborhoods and this is empty.
 	Targets []Target `yaml:"targets"`
+
+	// Styles holds neighborhoods declared only to style an automatic one
+	// (no targets of their own) that no configured target fell into.
+	// Discovered targets may still land in them.
+	Styles []Neighborhood `yaml:"-"`
 }
 
 type Server struct {
@@ -85,6 +100,143 @@ type Docker struct {
 type Prometheus struct {
 	URL string `yaml:"url"`
 }
+
+// Discovery adds buildings for workloads found at runtime. Each source is
+// off unless explicitly enabled.
+type Discovery struct {
+	// Interval is how often sources are rescanned.
+	Interval   Duration        `yaml:"interval"`
+	Kubernetes KubeDiscovery   `yaml:"kubernetes"`
+	Docker     DockerDiscovery `yaml:"docker"`
+}
+
+type KubeDiscovery struct {
+	Enabled bool `yaml:"enabled"`
+	// Namespaces limits discovery to these namespaces (default: all).
+	Namespaces []string `yaml:"namespaces"`
+	// ExcludeNamespaces defaults to DefaultExcludeNamespaces when unset;
+	// set it to [] to include them.
+	ExcludeNamespaces []string `yaml:"exclude_namespaces"`
+	// Kinds of workload to discover: deployment, statefulset, daemonset.
+	Kinds []string `yaml:"kinds"`
+	// RequireAnnotation only discovers workloads annotated
+	// packetatlas.io/discover: "true".
+	RequireAnnotation bool `yaml:"require_annotation"`
+}
+
+type DockerDiscovery struct {
+	Enabled bool `yaml:"enabled"`
+	// Projects limits discovery to these compose projects (default: all).
+	Projects        []string `yaml:"projects"`
+	ExcludeProjects []string `yaml:"exclude_projects"`
+	// RequireLabel only discovers containers labelled
+	// packetatlas.io/discover=true.
+	RequireLabel bool `yaml:"require_label"`
+}
+
+var (
+	DefaultExcludeNamespaces = []string{"kube-system", "kube-public", "kube-node-lease"}
+	DiscoveryKinds           = []string{"deployment", "statefulset", "daemonset"}
+)
+
+// Agent is the agent side of agent → hub reporting.
+type Agent struct {
+	// Hub is the base URL of the PacketAtlas that shows the map.
+	Hub string `yaml:"hub"`
+	// Cluster names this cluster on the hub; it must match the hub's entry.
+	Cluster string `yaml:"cluster"`
+	Secret  `yaml:",inline"`
+	// PushInterval is how often the agent reports.
+	PushInterval       Duration `yaml:"push_interval"`
+	CAFile             string   `yaml:"ca_file"`
+	InsecureSkipVerify bool     `yaml:"insecure_skip_verify"`
+	// Listen serves /healthz and /readyz for probes.
+	Listen string `yaml:"listen"`
+}
+
+// AgentSource is the hub side: one cluster allowed to push.
+type AgentSource struct {
+	Cluster string `yaml:"cluster"`
+	Secret  `yaml:",inline"`
+	// NeighborhoodPrefix is put before the agent's neighborhood names so
+	// clusters don't merge. Defaults to "<cluster>/"; "" disables it.
+	NeighborhoodPrefix *string `yaml:"neighborhood_prefix"`
+	// StaleAfter greys out the cluster's buildings when it stops reporting.
+	StaleAfter Duration `yaml:"stale_after"`
+}
+
+// Secret is a bearer token given inline, from an environment variable or
+// from a file. Exactly one must be set.
+type Secret struct {
+	Token     string `yaml:"token"`
+	TokenEnv  string `yaml:"token_env"`
+	TokenFile string `yaml:"token_file"`
+
+	// Resolved is the token after reading the env var or file.
+	Resolved string `yaml:"-"`
+}
+
+func (s *Secret) resolve() error {
+	n := 0
+	for _, v := range []string{s.Token, s.TokenEnv, s.TokenFile} {
+		if v != "" {
+			n++
+		}
+	}
+	if n != 1 {
+		return fmt.Errorf("set exactly one of token, token_env, token_file")
+	}
+	switch {
+	case s.Token != "":
+		s.Resolved = s.Token
+	case s.TokenEnv != "":
+		s.Resolved = os.Getenv(s.TokenEnv)
+		if s.Resolved == "" {
+			return fmt.Errorf("token_env: $%s is empty", s.TokenEnv)
+		}
+	default:
+		b, err := os.ReadFile(s.TokenFile)
+		if err != nil {
+			return fmt.Errorf("token_file: %w", err)
+		}
+		s.Resolved = strings.TrimSpace(string(b))
+		if s.Resolved == "" {
+			return fmt.Errorf("token_file: %s is empty", s.TokenFile)
+		}
+	}
+	if len(s.Resolved) < 16 {
+		return fmt.Errorf("token is too short (want at least 16 characters)")
+	}
+	return nil
+}
+
+// Validate checks the agent block; `packetatlas agent` calls it.
+func (a *Agent) Validate() error {
+	if a.Hub == "" {
+		return fmt.Errorf("agent.hub is required")
+	}
+	if u, err := url.Parse(a.Hub); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("agent.hub: want an http(s):// URL, got %q", a.Hub)
+	}
+	if a.Cluster == "" {
+		return fmt.Errorf("agent.cluster is required")
+	}
+	if err := a.resolve(); err != nil {
+		return fmt.Errorf("agent: %w", err)
+	}
+	return nil
+}
+
+// Prefix returns the neighborhood prefix for this cluster's buildings.
+func (a *AgentSource) Prefix() string {
+	if a.NeighborhoodPrefix == nil {
+		return a.Cluster + "/"
+	}
+	return *a.NeighborhoodPrefix
+}
+
+// Enabled reports whether any discovery source is on.
+func (d Discovery) Enabled() bool { return d.Kubernetes.Enabled || d.Docker.Enabled }
 
 // Neighborhood kinds, telling the UI where a grouping came from.
 const (
@@ -272,6 +424,30 @@ func (c *Config) merge(o *Config) {
 	setStr(&c.Docker.Host, o.Docker.Host)
 	setStr(&c.Prometheus.URL, o.Prometheus.URL)
 
+	setStr(&c.Agent.Hub, o.Agent.Hub)
+	setStr(&c.Agent.Cluster, o.Agent.Cluster)
+	if o.Agent.Token != "" || o.Agent.TokenEnv != "" || o.Agent.TokenFile != "" {
+		c.Agent.Secret = o.Agent.Secret
+	}
+	setDur(&c.Agent.PushInterval, o.Agent.PushInterval)
+	setStr(&c.Agent.CAFile, o.Agent.CAFile)
+	setStr(&c.Agent.Listen, o.Agent.Listen)
+	c.Agent.InsecureSkipVerify = c.Agent.InsecureSkipVerify || o.Agent.InsecureSkipVerify
+	c.Agents = append(c.Agents, o.Agents...)
+
+	setDur(&c.Discovery.Interval, o.Discovery.Interval)
+	ck, ok := &c.Discovery.Kubernetes, o.Discovery.Kubernetes
+	ck.Enabled = ck.Enabled || ok.Enabled
+	ck.RequireAnnotation = ck.RequireAnnotation || ok.RequireAnnotation
+	setList(&ck.Namespaces, ok.Namespaces)
+	setList(&ck.ExcludeNamespaces, ok.ExcludeNamespaces)
+	setList(&ck.Kinds, ok.Kinds)
+	cd, od := &c.Discovery.Docker, o.Discovery.Docker
+	cd.Enabled = cd.Enabled || od.Enabled
+	cd.RequireLabel = cd.RequireLabel || od.RequireLabel
+	setList(&cd.Projects, od.Projects)
+	setList(&cd.ExcludeProjects, od.ExcludeProjects)
+
 	for _, n := range o.Neighborhoods {
 		if existing := c.neighborhood(n.Name); existing != nil {
 			setStr(&existing.Color, n.Color)
@@ -281,6 +457,13 @@ func (c *Config) merge(o *Config) {
 		}
 	}
 	c.Targets = append(c.Targets, o.Targets...)
+}
+
+// setList replaces dst when the later file sets the list at all (even to []).
+func setList(dst *[]string, v []string) {
+	if v != nil {
+		*dst = v
+	}
 }
 
 func (c *Config) neighborhood(name string) *Neighborhood {
@@ -310,6 +493,27 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Defaults.TrafficMax == 0 {
 		c.Defaults.TrafficMax = 50e6 // 50 MB/s
+	}
+	if c.Agent.PushInterval.Duration == 0 {
+		c.Agent.PushInterval.Duration = 10 * time.Second
+	}
+	if c.Agent.Listen == "" {
+		c.Agent.Listen = ":8081"
+	}
+	for i := range c.Agents {
+		if c.Agents[i].StaleAfter.Duration == 0 {
+			c.Agents[i].StaleAfter.Duration = time.Minute
+		}
+	}
+	if c.Discovery.Interval.Duration == 0 {
+		c.Discovery.Interval.Duration = 30 * time.Second
+	}
+	k := &c.Discovery.Kubernetes
+	if k.ExcludeNamespaces == nil {
+		k.ExcludeNamespaces = DefaultExcludeNamespaces
+	}
+	if len(k.Kinds) == 0 {
+		k.Kinds = DiscoveryKinds
 	}
 }
 
@@ -343,7 +547,7 @@ func (c *Config) group() error {
 		}
 		name, kind := t.Neighborhood, KindCustom
 		if name == "" {
-			name, kind = t.autoNeighborhood()
+			name, kind = t.AutoNeighborhood()
 		}
 		if kind == KindCustom {
 			explicit[name] = true
@@ -364,6 +568,7 @@ func (c *Config) group() error {
 	kept := c.Neighborhoods[:0]
 	for _, n := range c.Neighborhoods {
 		if len(n.Targets) == 0 {
+			c.Styles = append(c.Styles, n)
 			continue
 		}
 		n.Kind = KindCustom
@@ -376,8 +581,9 @@ func (c *Config) group() error {
 	return nil
 }
 
-// autoNeighborhood names the neighborhood a target falls into naturally.
-func (t *Target) autoNeighborhood() (name, kind string) {
+// AutoNeighborhood names the neighborhood a target falls into when it isn't
+// placed explicitly, and its kind.
+func (t *Target) AutoNeighborhood() (name, kind string) {
 	switch {
 	case t.Kubernetes != nil:
 		if t.Kubernetes.Namespace == "" {
@@ -392,55 +598,102 @@ func (t *Target) autoNeighborhood() (name, kind string) {
 
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
 
+// Slug turns a name into the lowercase-dashes form used in target IDs.
+func Slug(s string) string { return slug(s) }
+
 func slug(s string) string {
 	return strings.Trim(slugRe.ReplaceAllString(strings.ToLower(s), "-"), "-")
 }
 
 func (c *Config) validate() error {
-	if len(c.Neighborhoods) == 0 {
-		return fmt.Errorf("config defines no targets")
+	for _, k := range c.Discovery.Kubernetes.Kinds {
+		if !contains(DiscoveryKinds, k) {
+			return fmt.Errorf("discovery.kubernetes.kinds: unknown kind %q (want %s)", k, strings.Join(DiscoveryKinds, ", "))
+		}
+	}
+	clusters := map[string]bool{}
+	for i := range c.Agents {
+		a := &c.Agents[i]
+		if a.Cluster == "" {
+			return fmt.Errorf("agents #%d: cluster is required", i+1)
+		}
+		if clusters[a.Cluster] {
+			return fmt.Errorf("agents: cluster %q listed twice", a.Cluster)
+		}
+		clusters[a.Cluster] = true
+		if err := a.resolve(); err != nil {
+			return fmt.Errorf("agents %q: %w", a.Cluster, err)
+		}
+		// The token is what identifies the cluster on push.
+		for _, b := range c.Agents[:i] {
+			if b.Resolved == a.Resolved {
+				return fmt.Errorf("agents %q and %q share a token; give each cluster its own", b.Cluster, a.Cluster)
+			}
+		}
+	}
+	if len(c.Neighborhoods) == 0 && !c.Discovery.Enabled() && len(c.Agents) == 0 {
+		return fmt.Errorf("config defines no targets: add some, opt in to discovery.kubernetes / discovery.docker, or list agents")
 	}
 	seen := map[string]bool{}
 	for ni := range c.Neighborhoods {
 		n := &c.Neighborhoods[ni]
 		for ti := range n.Targets {
 			t := &n.Targets[ti]
-			where := fmt.Sprintf("neighborhood %q target #%d", n.Name, ti+1)
 			if t.Name == "" {
-				return fmt.Errorf("%s: name is required", where)
+				return fmt.Errorf("neighborhood %q target #%d: name is required", n.Name, ti+1)
 			}
-			where = fmt.Sprintf("neighborhood %q target %q", n.Name, t.Name)
-			t.ID = slug(n.Name) + "/" + slug(t.Name)
+			where := fmt.Sprintf("neighborhood %q target %q", n.Name, t.Name)
+			if err := c.Prepare(t); err != nil {
+				return fmt.Errorf("%s: %w", where, err)
+			}
 			if seen[t.ID] {
 				return fmt.Errorf("%s: duplicate target name", where)
 			}
 			seen[t.ID] = true
-
-			if err := t.resolveType(); err != nil {
-				return fmt.Errorf("%s: %w", where, err)
-			}
-			if err := t.validateCheck(); err != nil {
-				return fmt.Errorf("%s: %w", where, err)
-			}
-			if t.Traffic != nil && c.Prometheus.URL == "" {
-				return fmt.Errorf("%s: traffic queries need prometheus.url", where)
-			}
-
-			if t.Building == "" {
-				t.Building = defaultBuilding[t.Type]
-			}
-			if !contains(Buildings, t.Building) {
-				return fmt.Errorf("%s: unknown building %q (want one of %s)", where, t.Building, strings.Join(Buildings, ", "))
-			}
-			if t.Interval.Duration == 0 {
-				t.Interval = c.Defaults.Interval
-			}
-			if t.Timeout.Duration == 0 {
-				t.Timeout = c.Defaults.Timeout
-			}
 		}
 	}
 	return nil
+}
+
+// Prepare validates a target whose Neighborhood is set and fills in its ID
+// and defaults. Discovery uses it for the targets it builds.
+func (c *Config) Prepare(t *Target) error {
+	if t.Name == "" {
+		return fmt.Errorf("name is required")
+	}
+	t.ID = slug(t.Neighborhood) + "/" + slug(t.Name)
+	if err := t.resolveType(); err != nil {
+		return err
+	}
+	if err := t.validateCheck(); err != nil {
+		return err
+	}
+	if t.Traffic != nil && c.Prometheus.URL == "" {
+		return fmt.Errorf("traffic queries need prometheus.url")
+	}
+	if t.Building == "" {
+		t.Building = defaultBuilding[t.Type]
+	}
+	if !contains(Buildings, t.Building) {
+		return fmt.Errorf("unknown building %q (want one of %s)", t.Building, strings.Join(Buildings, ", "))
+	}
+	if t.Interval.Duration == 0 {
+		t.Interval = c.Defaults.Interval
+	}
+	if t.Timeout.Duration == 0 {
+		t.Timeout = c.Defaults.Timeout
+	}
+	return nil
+}
+
+// Style returns the colour declared for a styling-only neighborhood.
+func (c *Config) Style(name string) string {
+	for _, n := range c.Styles {
+		if n.Name == name {
+			return n.Color
+		}
+	}
+	return ""
 }
 
 // resolveType infers Type from whichever check block is present, or checks

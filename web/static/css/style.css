@@ -306,6 +306,20 @@ code { font-size: 11px; }
   z-index: 30;
 }
 
+.empty {
+  position: fixed;
+  left: 50%;
+  top: 45%;
+  transform: translate(-50%, -50%);
+  background: var(--card);
+  color: var(--muted);
+  padding: 12px 18px;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  z-index: 5;
+}
+.empty[hidden] { display: none; }
+
 .conn {
   position: fixed;
   left: 50%;

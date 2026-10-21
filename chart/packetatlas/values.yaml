@@ -75,6 +75,8 @@ resources:
 
 podSecurityContext:
   runAsNonRoot: true
+  runAsUser: 65532              # distroless "nonroot"
+  runAsGroup: 65532
   seccompProfile:
     type: RuntimeDefault
   # Lets the non-root process send ICMP for ping targets.

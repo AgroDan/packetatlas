@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PacketAtlas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <canvas id="map" aria-label="Network map"></canvas>
+
+  <header class="searchbar">
+    <div class="brand"><span class="logo">▣</span> PacketAtlas <span id="demo" class="badge" hidden>DEMO DATA</span></div>
+    <div class="search-wrap">
+      <input id="search" type="search" placeholder="Search services  ( / )" autocomplete="off" spellcheck="false">
+      <ul id="results" hidden></ul>
+    </div>
+  </header>
+
+  <div id="summary" class="summary"></div>
+
+  <aside id="panel" class="panel">
+    <button class="close" aria-label="Close">✕</button>
+    <div class="panel-hero"><canvas class="thumb"></canvas></div>
+    <div class="panel-body"></div>
+  </aside>
+
+  <div class="zoom">
+    <button id="zin" title="Zoom in (+)">+</button>
+    <button id="zout" title="Zoom out (−)">−</button>
+    <button id="zfit" title="Show whole map">⤢</button>
+  </div>
+
+  <div class="minimap"><canvas id="minimap"></canvas></div>
+
+  <div id="tooltip" class="tooltip" hidden></div>
+  <div id="conn" class="conn" hidden>Reconnecting to monitor…</div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

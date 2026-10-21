@@ -1,0 +1,130 @@
+# PacketAtlas example config.
+#
+#   go run ./cmd/packetatlas -config examples/demo.yaml -demo
+#
+# Each target becomes a building; buildings are grouped into neighborhoods:
+#   1. explicitly — declared inside a `neighborhoods:` entry, or via a
+#      target's `neighborhood:` field
+#   2. otherwise by Kubernetes namespace
+#   3. otherwise by docker-compose project
+#   4. otherwise into the catch-all "Outskirts"
+#
+# Cars on the streets are traffic: inbound cars = rx, outbound cars = tx.
+# Kubernetes / Docker buildings get one floor per pod / container; lit
+# windows are the ready ones.
+
+server:
+  listen: ":8080"
+  push_interval: 2s       # how often the browser receives fresh state
+
+defaults:
+  interval: 15s           # check interval (per-target override: interval)
+  timeout: 3s
+  history_size: 120       # samples kept per target for sparklines
+  traffic_max: 50000000   # bytes/sec that renders as gridlock (log scale)
+
+kubernetes:
+  kubeconfig: ""          # empty = in-cluster, else $KUBECONFIG / ~/.kube/config
+  context: ""
+
+docker:
+  host: ""                # empty = $DOCKER_HOST, else unix:///var/run/docker.sock
+
+# prometheus:
+#   url: http://prometheus.monitoring:9090
+
+# Explicit neighborhoods. An entry with no targets just styles an automatic
+# neighborhood of the same name (here: the "prod" namespace).
+neighborhoods:
+  - name: prod
+    color: "#4f7cc4"
+
+  - name: Internet Edge
+    color: "#d08a3a"
+    targets:
+      - name: Public website
+        http:
+          url: https://example.com
+          expect_status: [200]
+        degraded_latency: 800ms
+      - name: Status API
+        building: office
+        http:
+          url: https://example.com/health
+          contains: ok
+      - name: Cloudflare DNS
+        ping:
+          host: 1.1.1.1
+
+  - name: Home Lab
+    color: "#4fa36b"
+    targets:
+      - name: Router
+        ping:
+          host: 192.168.1.1
+      - name: NAS
+        tcp:
+          address: 192.168.1.10:445
+
+# Targets placed automatically by namespace / compose project.
+targets:
+  # → neighborhood "prod" (namespace)
+  - name: api-gateway
+    building: tower
+    kubernetes: { namespace: prod, deployment: api-gateway }
+  - name: checkout
+    kubernetes: { namespace: prod, deployment: checkout }
+  - name: catalog
+    kubernetes: { namespace: prod, service: catalog }
+  - name: postgres
+    building: datacenter
+    kubernetes: { namespace: prod, statefulset: postgres }
+  - name: image-resizer
+    building: factory
+    kubernetes: { namespace: prod, deployment: image-resizer }
+
+  # → neighborhood "monitoring" (namespace)
+  - name: grafana
+    kubernetes: { namespace: monitoring, deployment: grafana }
+    # Override kubelet-derived traffic with Prometheus:
+    # traffic:
+    #   rx: sum(rate(container_network_receive_bytes_total{namespace="monitoring",pod=~"grafana-.*"}[1m]))
+    #   tx: sum(rate(container_network_transmit_bytes_total{namespace="monitoring",pod=~"grafana-.*"}[1m]))
+  - name: prometheus
+    building: datacenter
+    kubernetes: { namespace: monitoring, statefulset: prometheus }
+  - name: node-exporter
+    building: shop
+    kubernetes: { namespace: monitoring, daemonset: node-exporter }
+
+  # → neighborhood "ingress-nginx" (namespace)
+  - name: ingress-nginx
+    building: tower
+    kubernetes: { namespace: ingress-nginx, daemonset: ingress-nginx-controller }
+
+  # → neighborhood "blog" (docker-compose project)
+  - name: web
+    docker: { project: blog, service: web }
+  - name: db
+    building: datacenter
+    docker: { project: blog, service: db }
+  - name: worker
+    building: factory
+    docker: { project: blog, service: worker }
+
+  # → neighborhood "nextcloud" (docker-compose project)
+  - name: app
+    docker: { project: nextcloud, service: app }
+  - name: redis
+    building: datacenter
+    docker: { project: nextcloud, service: redis }
+
+  # A standalone container, placed explicitly.
+  - name: Plex
+    neighborhood: Home Lab
+    building: shop
+    docker: { container: plex }
+
+  # No namespace, project or neighborhood → "Outskirts".
+  - name: Backup server
+    tcp: { address: 192.168.1.20:22 }

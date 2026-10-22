@@ -10,6 +10,146 @@ A network monitor whose UI is a 16-bit isometric city. Every service you monitor
   - **down** → on fire: scorched walls, flames from the roof and windows, smoke and embers, and a fire engine out front with flashing lights spraying the roof
   - **unknown** (not checked yet) → greyed out with dark windows
 
+## Quickstart
+
+### 1. See it running (no setup)
+
+```bash
+go build -o packetatlas ./cmd/packetatlas
+./packetatlas -config examples/demo.yaml -demo
+```
+
+Open http://localhost:8080. `-demo` invents statuses and traffic, so you can look around before pointing it at anything real.
+
+### 2. Monitor your first service
+
+Create `packetatlas.yaml` with one target per thing you want to watch. Each target needs a `name` and **one** check block (`http`, `tcp`, `ping`, `kubernetes` or `docker`):
+
+```yaml
+targets:
+  - name: Company website
+    http: { url: https://example.com }
+```
+
+Run it without `-demo`:
+
+```bash
+./packetatlas -config packetatlas.yaml
+```
+
+The building appears grey until its first check finishes (within `defaults.interval`, 15s by default), then turns green, amber or red.
+
+Or run it with Docker:
+
+```bash
+docker run --rm -p 8080:8080 -v "$PWD/packetatlas.yaml:/etc/packetatlas.yaml:ro" \
+  ghcr.io/agrodan/packetatlas:latest -config /etc/packetatlas.yaml
+```
+
+### 3. Add more checks
+
+Add another entry under `targets:`, then restart PacketAtlas. The config is read at startup only.
+
+```yaml
+targets:
+  # A website or API: up if it answers 2xx/3xx.
+  - name: Billing API
+    http:
+      url: https://billing.example.com/healthz
+      expect_status: [200]        # optional: only these codes count as up
+      contains: '"status":"ok"'   # optional: the body must contain this
+    degraded_latency: 800ms       # optional: slower than this → amber (construction site)
+
+  # Anything that listens on a port: databases, SSH, SMTP, …
+  - name: Postgres (RDS)
+    tcp: { address: mydb.abc123.us-east-1.rds.amazonaws.com:5432 }
+
+  # A host that should answer ping.
+  - name: Office router
+    ping: { host: 192.168.1.1 }
+```
+
+Each target can also set `building:`, `color:`, `interval:` and `timeout:`. The [Checks](#checks) section lists every option.
+
+### 4. Group them into neighborhoods
+
+Targets with nothing else to go on land in **Outskirts**. To give related services their own part of the city, nest them in a neighborhood, or give each one a `neighborhood:` field:
+
+```yaml
+neighborhoods:
+  - name: External services
+    color: "#d08a3a"
+    targets:
+      - name: Stripe API
+        http: { url: https://status.stripe.com }
+      - name: Billing API
+        http: { url: https://billing.example.com/healthz }
+
+targets:
+  - name: Office router
+    neighborhood: External services   # same result as nesting it above
+    ping: { host: 192.168.1.1 }
+```
+
+### 5. Add discovery, keep your own checks
+
+To map Kubernetes workloads or Docker Compose services automatically, turn on [discovery](#discovery). Declared targets keep working next to discovered ones, so in one config you can discover a cluster and also watch services outside it:
+
+```yaml
+discovery:
+  kubernetes: { enabled: true }       # every deployment/statefulset/daemonset
+
+targets:                              # plus things the cluster doesn't run
+  - name: Payment provider
+    neighborhood: External services
+    http: { url: https://api.payments.example/health }
+  - name: Legacy VM
+    neighborhood: External services
+    tcp: { address: 10.20.0.15:443 }
+```
+
+### Monitoring a service outside the cluster
+
+How you do this depends on how PacketAtlas is deployed. A check always runs **from wherever PacketAtlas (or its agent) is running**, so pick the place that can reach the service.
+
+| Your setup | Where to declare the outside service |
+|---|---|
+| A single PacketAtlas binary or container | In its config file, under `targets:` as above. |
+| In a cluster with the chart in `mode=server` | In the chart's `config` value (see below). |
+| A hub plus cluster agents | In the **hub's** config, so it shows as its own neighborhood. If you declare it in an agent's config instead, the check runs from inside that cluster and the building shows up under that cluster's prefix (e.g. `prod/External services`). Do that only for services that only the cluster can reach. |
+
+With the Helm chart, put targets in a values file. They're merged over the generated config, and changing them restarts the pod:
+
+```yaml
+# my-values.yaml
+config:
+  neighborhoods:
+    - name: External services
+      targets:
+        - name: Company website
+          http: { url: https://example.com }
+        - name: Legacy VM
+          tcp: { address: 10.20.0.15:443 }
+```
+
+```bash
+helm upgrade --install packetatlas ./chart/packetatlas -n packetatlas --create-namespace \
+  --set mode=server -f my-values.yaml
+```
+
+### Keeping configs tidy
+
+`-config` also accepts a directory. Every `*.yaml` / `*.yml` file in it is loaded in name order: later files override settings, neighborhoods with the same name are merged, and targets are combined. That makes it easy to keep one file per team or per neighborhood:
+
+```
+conf.d/
+  00-base.yaml          # server, defaults, discovery
+  10-external.yaml      # the "External services" neighborhood
+  20-home-lab.yaml
+```
+
+Target names must be unique within a neighborhood.
+
 ## Run
 
 ```bash
@@ -54,7 +194,7 @@ targets:                        # placed automatically
     tcp: { address: 192.168.1.10:445 }
 ```
 
-On the map, neighborhoods with four or more buildings get whole blocks; smaller ones share blocks, one lot per building, with plain paving marking the boundary between them. Neighborhood labels (shown when zoomed out) say where each one came from ("k8s namespace" or "compose app"). If a namespace and a compose project share a name, they become one neighborhood.
+On the map, neighborhoods with four or more buildings get whole blocks; smaller ones share blocks, one lot per building, with plain paving marking the boundary between them. Neighborhoods grow outward from the middle of the map as organic clusters of blocks, with a river winding through (or past, for small cities) crossed by bridges, plus a lake and a park once the city is big enough. Highways run from the city to each edge of the map, where through-traffic enters. The layout is seeded from neighborhood names, so it stays the same between reloads. Neighborhood labels (shown when zoomed out) say where each one came from ("k8s namespace" or "compose app"). If a namespace and a compose project share a name, they become one neighborhood.
 
 ## Discovery
 
@@ -135,7 +275,7 @@ The chart can also run the whole map inside the cluster with `--set mode=server`
 | `config` | extra PacketAtlas YAML merged over the generated config: targets, neighborhoods, `agents:` for a server-mode hub, … |
 | `extraEnv` | e.g. Secret-backed `token_env` variables for a server-mode hub's `agents:` |
 
-The pod runs as non-root on a read-only filesystem with every capability dropped. It sets `net.ipv4.ping_group_range` so ping targets work without root. It needs read-only RBAC: the ClusterRole above plus `list` on workloads. Build the image with `docker build -t ghcr.io/agrodan/packetatlas:0.1.0 .`.
+The pod runs as non-root on a read-only filesystem with every capability dropped. It sets `net.ipv4.ping_group_range` so ping targets work without root. It needs read-only RBAC: the ClusterRole above plus `list` on workloads. The chart pulls `ghcr.io/agrodan/packetatlas:latest`, which CI publishes from `main`. Pushing a `v0.1.0` git tag also publishes `:0.1.0`; pin it with `--set image.tag=0.1.0 --set image.pullPolicy=IfNotPresent`. To build the image yourself: `docker build -t ghcr.io/agrodan/packetatlas:dev .`.
 
 ## Checks
 
@@ -198,7 +338,7 @@ internal/server/      /api/state (JSON), /api/stream (SSE), /api/ingest (agent p
 chart/packetatlas/    Helm chart (agent or server mode)
 web/static/           embedded UI (plain ES modules, no build step)
   js/pixel.js         pixel buffer + isometric box rasteriser
-  js/city.js          neighborhood/block layout, road grid, BFS paths, ground rendering
+  js/city.js          organic block layout, roads, river/lakes, BFS paths, ground rendering
   js/sprites.js       procedural buildings, cars, trees, pins
   js/traffic.js       car spawning, lane following, queueing
   js/renderer.js      camera, depth-sorted drawing, pins/labels, effects, minimap

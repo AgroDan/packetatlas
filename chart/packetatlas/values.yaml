@@ -5,8 +5,10 @@ mode: agent
 
 image:
   repository: ghcr.io/agrodan/packetatlas
-  tag: ""                       # defaults to the chart's appVersion
-  pullPolicy: IfNotPresent
+  # CI publishes "latest" from main, and "<version>" (e.g. 0.1.0) for v* git
+  # tags. Pin a version tag in production; "" means the chart's appVersion.
+  tag: latest
+  pullPolicy: Always            # IfNotPresent is fine once tag is pinned
 
 imagePullSecrets: []
 

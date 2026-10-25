@@ -1,5 +1,7 @@
 # PacketAtlas
 
+<p align="center"><img src="docs/images/demo.gif" alt="PacketAtlas: an isometric pixel-art city where each monitored service is a building, with cars driving through its streets in proportion to traffic" width="640"></p>
+
 A network monitor whose UI is a 16-bit isometric city. Every service you monitor is a building; the streets around it fill with cars in proportion to its traffic.
 
 - **Targets** (buildings) are declared in YAML, or found by opt-in **discovery** of Docker Compose services and Kubernetes workloads, and grouped into **neighborhoods**.

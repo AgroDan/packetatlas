@@ -115,7 +115,10 @@ type entry struct {
 	source    string
 	autoKind  string
 	autoColor string // neighborhood colour reported by an agent
-	stop      context.CancelFunc
+	// outside: the target checks something outside the Docker host or
+	// cluster (see config.IsOutside); for agent targets, as the agent saw it.
+	outside bool
+	stop    context.CancelFunc
 }
 
 // Neighborhood is a neighborhood as shown on the map.
@@ -124,6 +127,9 @@ type Neighborhood struct {
 	Color string `json:"color,omitempty"`
 	// Kind is where the grouping came from: custom, namespace, compose, ungrouped.
 	Kind string `json:"kind"`
+	// Outside is set when every building in it checks something outside
+	// the environment (or config says so); the map puts these across the river.
+	Outside bool `json:"outside,omitempty"`
 }
 
 type Monitor struct {
@@ -167,7 +173,9 @@ func New(cfg *config.Config, demo bool) (*Monitor, error) {
 		if err != nil {
 			return nil, err
 		}
-		m.entries[t.ID] = newEntry(t, c)
+		e := newEntry(t, c)
+		e.outside = cfg.IsOutside(t)
+		m.entries[t.ID] = e
 	}
 	if !demo {
 		m.unscanned.Store(int32(len(m.discoverers())))

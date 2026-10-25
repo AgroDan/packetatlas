@@ -17,6 +17,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -256,6 +257,9 @@ type Neighborhood struct {
 	// also be declared without targets just to style an automatic one, e.g.
 	// give the "prod" namespace a colour.
 	Targets []Target `yaml:"targets"`
+	// Outside overrides whether the map puts this neighborhood across the
+	// river with services outside the environment (see Config.IsOutside).
+	Outside *bool `yaml:"outside"`
 
 	Kind string `yaml:"-"`
 }
@@ -267,6 +271,8 @@ type Target struct {
 	Color    string `yaml:"color"`
 	// Neighborhood explicitly places a top-level target.
 	Neighborhood string `yaml:"neighborhood"`
+	// Outside overrides the guess made by Config.IsOutside.
+	Outside *bool `yaml:"outside"`
 
 	Interval Duration `yaml:"interval"`
 	Timeout  Duration `yaml:"timeout"`
@@ -453,6 +459,9 @@ func (c *Config) merge(o *Config) {
 	for _, n := range o.Neighborhoods {
 		if existing := c.neighborhood(n.Name); existing != nil {
 			setStr(&existing.Color, n.Color)
+			if n.Outside != nil {
+				existing.Outside = n.Outside
+			}
 			existing.Targets = append(existing.Targets, n.Targets...)
 		} else {
 			c.Neighborhoods = append(c.Neighborhoods, n)
@@ -696,6 +705,69 @@ func (c *Config) Style(name string) string {
 		}
 	}
 	return ""
+}
+
+// NeighborhoodOutside returns the `outside` setting of a declared
+// neighborhood (with or without targets of its own), or nil.
+func (c *Config) NeighborhoodOutside(name string) *bool {
+	for _, list := range [][]Neighborhood{c.Neighborhoods, c.Styles} {
+		for _, n := range list {
+			if n.Name == name {
+				return n.Outside
+			}
+		}
+	}
+	return nil
+}
+
+// IsOutside reports whether t checks something outside the environment
+// PacketAtlas watches (its Docker host or cluster), which the map puts
+// across the river. Docker and Kubernetes targets are inside. Other checks
+// go by host: cluster DNS names (*.svc, *.cluster.local) are inside, and so
+// are bare names like compose service names when Docker or Kubernetes is in
+// use; everything else is outside. A target's `outside` setting wins.
+func (c *Config) IsOutside(t *Target) bool {
+	if t.Outside != nil {
+		return *t.Outside
+	}
+	var host string
+	switch {
+	case t.HTTP != nil:
+		if u, err := url.Parse(t.HTTP.URL); err == nil {
+			host = u.Hostname()
+		}
+	case t.TCP != nil:
+		host = t.TCP.Address
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+	case t.Ping != nil:
+		host = t.Ping.Host
+	default:
+		return false
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	switch {
+	case strings.HasSuffix(host, ".svc"), strings.Contains(host, ".svc."), strings.HasSuffix(host, ".cluster.local"):
+		return false
+	case host != "" && host != "localhost" && !strings.Contains(host, ".") && net.ParseIP(host) == nil:
+		return !c.watchesContainers()
+	}
+	return true
+}
+
+// watchesContainers reports whether this config maps Docker or Kubernetes
+// workloads, so bare hostnames are likely their service names.
+func (c *Config) watchesContainers() bool {
+	if c.Discovery.Enabled() {
+		return true
+	}
+	for _, t := range c.AllTargets() {
+		if t.Docker != nil || t.Kubernetes != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveType infers Type from whichever check block is present, or checks

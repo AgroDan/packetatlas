@@ -2,7 +2,7 @@
 // status effects, hit-testing and the minimap.
 
 import {
-  buildingSpec, buildingSprite, carSprite, treeSprite, pinSprite, craneSprite, coneSprite, fireTruckSprite, STATE_COLORS,
+  buildingSpec, buildingSprite, carSprite, treeSprite, mountainSprite, pinSprite, craneSprite, coneSprite, fireTruckSprite, STATE_COLORS,
 } from './sprites.js';
 
 const KIND_SUBTITLE = { namespace: 'k8s namespace', compose: 'compose app' };
@@ -269,6 +269,12 @@ export class Renderer {
       const sp = treeSprite(t.variant);
       const x = Math.round(p.x - sp.cx), y = Math.round(p.y - sp.cy);
       if (visible(x, y, 16, 24)) items.push({ depth: t.x + t.y, img: sp.canvas, x, y, a: 1 });
+    }
+    for (const m of this.city.mountains) {
+      const p = this.city.project(m.x, m.y);
+      const sp = mountainSprite(m.r, m.h, m.seed);
+      const x = Math.round(p.x - sp.cx), y = Math.round(p.y - sp.cy);
+      if (visible(x, y, sp.canvas.width, sp.canvas.height)) items.push({ depth: m.x + m.y, img: sp.canvas, x, y, a: 1 });
     }
     for (const b of this.city.buildings) {
       const c = b.sprite.canvas;
@@ -569,7 +575,7 @@ export class Renderer {
       const p = this.city.project(...this.city.labelAnchor(d));
       const x = p.x * s + ox, y = p.y * s + oy + 14 * dpr;
       const name = d.name.toUpperCase();
-      const sub = KIND_SUBTITLE[d.kind];
+      const sub = d.outside ? 'outside' : KIND_SUBTITLE[d.kind];
       ctx.font = `700 ${fontPx}px "Pixelify Sans", ui-monospace, monospace`;
       // Pad the box so neighbours keep a visible gap, not just no overlap.
       const w = ctx.measureText(name).width + 28 * dpr;

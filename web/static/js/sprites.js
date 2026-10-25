@@ -740,6 +740,96 @@ export function treeSprite(variant) {
   return s;
 }
 
+// --- mountains -------------------------------------------------------------
+
+const mountainCache = new Map();
+const MTN = {
+  rock: hexToRgb('#857868'),
+  rockHi: hexToRgb('#a69885'),
+  snow: hexToRgb('#eef3f7'),
+  snowShade: hexToRgb('#bccbd9'),
+  veg: hexToRgb('#6a8a3f'),
+  vegDark: hexToRgb('#566f33'),
+  foot: hexToRgb('#7f9a48'), // the far bank's grass, so peaks rise out of it
+};
+
+/**
+ * A mountain over a round footprint of radius r tiles, peaking h pixels up.
+ * Drawn as a heightfield, back to front, lit like the buildings (from the
+ * front-left), with snow above the treeline on tall peaks. cx, cy is the
+ * centre of the footprint.
+ */
+export function mountainSprite(r, h, seed) {
+  const k = `${r.toFixed(2)}|${h}|${seed}`;
+  if (mountainCache.has(k)) return mountainCache.get(k);
+  const rx = r * AX * Math.SQRT2, ry = rx / 2;
+  const W = Math.ceil(rx * 2) + 4, cx = W / 2, cy = h + 4;
+  const buf = new PixBuf(W, Math.ceil(cy + ry) + 3);
+  const rnd = rng(seed);
+  // Value noise over the footprint, for ridges and a ragged outline.
+  const noise = (x, y, s) => {
+    const i = Math.floor(x), j = Math.floor(y), u = x - i, v = y - j;
+    const sm = (t) => t * t * (3 - 2 * t);
+    const a = hash2(i, j, s), b = hash2(i + 1, j, s), c = hash2(i, j + 1, s), d = hash2(i + 1, j + 1, s);
+    return (a + (b - a) * sm(u)) * (1 - sm(v)) + (c + (d - c) * sm(u)) * sm(v);
+  };
+  const s1 = (rnd() * 1e6) | 0, s2 = s1 + 1;
+  const px = (rnd() - 0.5) * r * 0.4, py = (rnd() - 0.5) * r * 0.4; // summit, off-centre
+  const height = (x, y) => {
+    const ang = Math.atan2(y, x);
+    const edge = r * (0.86 + 0.14 * noise(Math.cos(ang) * 2 + 5, Math.sin(ang) * 2 + 5, s2));
+    if (Math.hypot(x, y) >= edge) return 0;
+    // Distance to the summit, scaled so the slope still ends at the edge.
+    const dx = x - px, dy = y - py;
+    const reach = edge - (px * Math.cos(Math.atan2(dy, dx)) + py * Math.sin(Math.atan2(dy, dx)));
+    const t = Math.min(1, Math.hypot(dx, dy) / Math.max(0.5, reach));
+    const ridged = 1 - Math.abs(2 * noise(x * 1.3 + 9, y * 1.3 + 9, s1) - 1);
+    return h * Math.pow(1 - t, 1.1) * (0.78 + 0.32 * ridged);
+  };
+  const L = [0.25, 0.75, 0.6];
+  const Ln = Math.hypot(...L);
+  const tall = h >= 55;
+  const step = 1 / 24, N = Math.ceil((2 * r) / step);
+  const filled = new Uint8Array(buf.w * buf.h);
+  // Diagonals of the sample grid, back (small x + y) to front.
+  for (let sum = 0; sum <= 2 * N; sum++) {
+    for (let i = Math.max(0, sum - N); i <= Math.min(N, sum); i++) {
+      const x = -r + i * step, y = -r + (sum - i) * step;
+      const z = height(x, y);
+      if (z <= 0) continue;
+      const nx = height(x - step, y) - height(x + step, y), ny = height(x, y - step) - height(x, y + step);
+      // Normal of the surface in pixel units (one tile is AX pixels across).
+      const nz = 2 * step * AX;
+      const lum = (nx * L[0] + ny * L[1] + nz * L[2]) / (Math.hypot(nx, ny, nz) * Ln);
+      const f = z / h, wob = noise(x * 3, y * 3, s2) * 0.12;
+      let c;
+      if (tall && f > 0.6 + wob) c = lum > 0.55 ? MTN.snow : MTN.snowShade;
+      else if (f < 0.06) c = MTN.foot;
+      else if (f < 0.2 + wob) c = lum > 0.5 ? MTN.veg : MTN.vegDark;
+      else c = lum > 0.75 ? MTN.rockHi : lum > 0.45 ? MTN.rock : shade(MTN.rock, lum > 0.25 ? -0.22 : -0.4);
+      const sx = Math.round(cx + (x - y) * AX), sy = Math.round(cy + (x + y) * (AX / 2) - z);
+      // A short column under each sample closes the gaps between samples;
+      // anything it covers is hidden behind this slope anyway.
+      for (let dy = 0; dy < 5; dy++) {
+        buf.set(sx, sy + dy, c);
+        if (sy + dy >= 0 && sy + dy < buf.h) filled[(sy + dy) * buf.w + sx] = 1;
+      }
+    }
+  }
+  // Darken the skyline for a crisp 16-bit silhouette.
+  for (let y = 1; y < buf.h; y++)
+    for (let x = 0; x < buf.w; x++) {
+      const i = (y * buf.w + x) * 4;
+      if (filled[y * buf.w + x] && !filled[(y - 1) * buf.w + x] && y < cy) {
+        const c = [buf.data[i], buf.data[i + 1], buf.data[i + 2]];
+        buf.set(x, y, shade(c, -0.3));
+      }
+    }
+  const s = { canvas: buf.toCanvas(), cx: Math.round(cx), cy };
+  mountainCache.set(k, s);
+  return s;
+}
+
 // --- map pins ---------------------------------------------------------------
 
 export const STATE_COLORS = {

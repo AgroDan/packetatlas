@@ -1,0 +1,55 @@
+# PacketAtlas on a plain Docker host, without giving it the Docker socket.
+#
+#   DOCKER_GID=$(stat -c %g /var/run/docker.sock) docker compose -f examples/docker-compose.yaml up -d
+#
+# Open http://localhost:8080. Every compose project on the host becomes a
+# neighborhood and every service a building.
+#
+# PacketAtlas only ever reads two Engine API endpoints: the container list and
+# one-shot container stats. socket-proxy holds the socket and allows exactly
+# those two GET requests, so PacketAtlas can't start, stop or exec into
+# containers, read logs or env vars, or copy files out of them. The `:ro` on
+# the socket mount doesn't do that: a read-only socket can still be written
+# to. The allowlist is the protection.
+
+services:
+  socket-proxy:
+    image: wollomatic/socket-proxy:1.13.2
+    restart: unless-stopped
+    user: "65534:${DOCKER_GID:?set DOCKER_GID to the group that owns /var/run/docker.sock}"
+    mem_limit: 64M
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command:
+      - -listenip=0.0.0.0
+      - -allowfrom=packetatlas
+      # Anchored automatically (^…$). Matches /containers/json and
+      # /containers/<id>/stats, with or without an API version prefix.
+      - -allowGET=(/v1\.[0-9]+)?/containers/(json|[0-9a-f]+/stats)
+      - -watchdoginterval=3600
+      - -stoponwatchdog
+    networks: [docker-api]
+
+  packetatlas:
+    image: ghcr.io/agrodan/packetatlas:latest
+    restart: unless-stopped
+    depends_on: [socket-proxy]
+    command: ["-config", "/etc/packetatlas.yaml"]
+    volumes:
+      - ./docker.yaml:/etc/packetatlas.yaml:ro
+    ports:
+      - "8080:8080"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges]
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"   # ping targets without root
+    networks: [docker-api, default]
+
+networks:
+  # Only these two containers are on it, and it has no route out.
+  docker-api:
+    internal: true

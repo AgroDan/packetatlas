@@ -68,11 +68,11 @@ func (m *Monitor) Ingest(cluster, prefix string, hoods []Neighborhood, targets [
 		}
 		tg := e.target
 		if tg.Name != t.Name || tg.Neighborhood != hood || tg.Building != t.Building ||
-			tg.Color != t.Color || e.autoKind != h.Kind || e.autoColor != h.Color {
+			tg.Color != t.Color || e.autoKind != h.Kind || e.autoColor != h.Color || e.outside != h.Outside {
 			changed = true
 		}
 		tg.Name, tg.Neighborhood, tg.Type, tg.Building, tg.Color = t.Name, hood, t.Type, t.Building, t.Color
-		e.autoKind, e.autoColor = h.Kind, h.Color
+		e.autoKind, e.autoColor, e.outside = h.Kind, h.Color, h.Outside
 
 		prev := e.status
 		s := t

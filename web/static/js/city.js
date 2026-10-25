@@ -20,9 +20,9 @@ const SHAPES = {
 const EDGE_H = 14; // depth of the dirt cliff under the map
 const WS = 2; // water field samples per tile
 
-export const T = { GRASS: 0, ROAD: 1, LOT: 2, PARK: 3, PLAZA: 4 };
+export const T = { GRASS: 0, ROAD: 1, LOT: 2, PARK: 3, PLAZA: 4, ROCK: 5 };
 // What occupies a block-sized cell of the layout grid.
-const K = { EMPTY: 0, LOTS: 1, PARK: 2, LAKE: 3, RIVER: 4 };
+const K = { EMPTY: 0, LOTS: 1, PARK: 2, LAKE: 3, RIVER: 4, MOUNTAIN: 5 };
 
 const DIRS = [
   [0, -1], // 0: -y (screen NE)
@@ -37,6 +37,12 @@ const C = {
   grass: hexToRgb('#5c9a45'),
   grassDark: hexToRgb('#4f8a3c'),
   grassLight: hexToRgb('#6dab52'),
+  // Drier country across the river, where outside services live.
+  farGrass: hexToRgb('#7f9a48'),
+  farGrassDark: hexToRgb('#6e8a3d'),
+  farGrassLight: hexToRgb('#94ad56'),
+  scree: hexToRgb('#7a7268'),
+  screeDark: hexToRgb('#625b53'),
   park: hexToRgb('#66a84c'),
   parkStripe: hexToRgb('#5d9f44'),
   asphalt: hexToRgb('#4a4c56'),
@@ -68,8 +74,13 @@ export class City {
       name: d.name,
       color: d.color || PALETTE[i % PALETTE.length],
       kind: d.kind,
+      outside: !!d.outside,
       targets: targets.filter((t) => t.neighborhood === d.name),
     }));
+    // With services both inside and outside the environment (Docker host or
+    // cluster), the river becomes a border: outside neighborhoods sit on the
+    // far bank, behind a mountain ridge, reached by one road over a pass.
+    this.split = this.neighborhoods.some((d) => d.outside) && this.neighborhoods.some((d) => !d.outside);
     // Seeded by neighborhood names only, so the river and lakes stay put as
     // targets come and go.
     this.seed = strHash(this.neighborhoods.map((d) => d.name).join('|'));
@@ -78,6 +89,7 @@ export class City {
     this.buildWater();
     this.buildTiles();
     this.placeBuildings();
+    this.placeMountains();
     this.placeTrees();
     this.bfsCache = new Map();
   }
@@ -88,33 +100,42 @@ export class City {
     const r = rng(this.seed);
 
     // Big neighborhoods get whole blocks; small ones are first-fit into
-    // shared blocks.
-    const items = []; // { nb: blocks wanted, members: [neighborhood] }
-    let shared = [];
-    for (const d of this.neighborhoods) {
-      const n = Math.max(1, d.targets.length);
-      if (n >= SHARE_BELOW) {
-        items.push({ nb: Math.ceil(n / 4), members: [d] });
-        continue;
+    // shared blocks. Inside and outside neighborhoods never share one.
+    const pack = (hoods) => {
+      const items = []; // { nb: blocks wanted, members: [neighborhood] }
+      let shared = [];
+      for (const d of hoods) {
+        const n = Math.max(1, d.targets.length);
+        if (n >= SHARE_BELOW) {
+          items.push({ nb: Math.ceil(n / 4), members: [d] });
+          continue;
+        }
+        const fits = (b) => SHAPES[n].find((shape) => shape.every((q) => !b.used.has(q)));
+        let blk = shared.find(fits);
+        if (!blk) {
+          blk = { nb: 1, members: [], used: new Set() };
+          shared.push(blk);
+          items.push(blk);
+        }
+        d.shape = fits(blk);
+        for (const q of d.shape) blk.used.add(q);
+        blk.members.push(d);
+        shared = shared.filter((b) => b.used.size < 4);
       }
-      const fits = (b) => SHAPES[n].find((shape) => shape.every((q) => !b.used.has(q)));
-      let blk = shared.find(fits);
-      if (!blk) {
-        blk = { nb: 1, members: [], used: new Set() };
-        shared.push(blk);
-        items.push(blk);
-      }
-      d.shape = fits(blk);
-      for (const q of d.shape) blk.used.add(q);
-      blk.members.push(d);
-      shared = shared.filter((b) => b.used.size < 4);
-    }
+      return items;
+    };
+    const split = this.split;
+    const inner = pack(this.neighborhoods.filter((d) => !split || !d.outside));
+    const outer = split ? pack(this.neighborhoods.filter((d) => d.outside)) : [];
+    const items = [...inner, ...outer];
+    const blocks = (list) => list.reduce((s, it) => s + it.nb, 0);
 
     // Everything below works on an unbounded grid of block-sized cells
-    // centred on (0, 0), normalised to the map at the end.
-    const total = items.reduce((s, it) => s + it.nb, 0);
+    // centred on (0, 0), normalised to the map at the end. The city proper
+    // (inside neighborhoods) grows around the centre.
+    const total = blocks(inner);
     const R = Math.sqrt(total / Math.PI); // radius of a disc of `total` cells
-    const span = Math.ceil(R) + 3;
+    const span = Math.ceil(Math.max(R, Math.sqrt(blocks(outer) / Math.PI))) + 3;
     const reserved = new Map(); // key → K.RIVER | K.LAKE | K.PARK
     const nearKind = (x, y, kinds, diag = false) => {
       for (let dy = -1; dy <= 1; dy++)
@@ -149,7 +170,7 @@ export class City {
       return out;
     };
     const mid = Math.max(1, Math.floor(R * 0.6));
-    let river = total >= 6 ? meander(-mid, mid, Math.round((r() - 0.5) * 2 * mid)) : [];
+    let river = total >= 6 && !split ? meander(-mid, mid, Math.round((r() - 0.5) * 2 * mid)) : [];
 
     // A lake (two cells in big cities) and a park, part way out from the
     // centre so the city grows around them.
@@ -172,44 +193,65 @@ export class City {
     if (total >= 10) spot(K.PARK, 0.2, 0.7);
 
     // Grow the city: each item starts from the free cell nearest the centre
-    // (with some jitter, preferring cells touching the city), then grows
-    // its cluster into free neighbouring cells, favouring compact shapes.
+    // (cx, cy) (with some jitter, preferring cells touching the city), then
+    // grows its cluster into free neighbouring cells, favouring compact
+    // shapes. ok() limits where a group may grow.
     const taken = new Map(); // key → item
-    const free = (x, y) => !reserved.has(key(x, y)) && !taken.has(key(x, y));
     const touches = (x, y, pred) => DIRS.some(([dx, dy]) => pred(key(x + dx, y + dy)));
-    for (const it of items) {
-      it.cells = [];
-      for (let k = 0; k < it.nb; k++) {
-        let cands = [];
-        let score;
-        if (k > 0) {
-          for (const [x, y] of it.cells) for (const [dx, dy] of DIRS) if (free(x + dx, y + dy)) cands.push([x + dx, y + dy]);
-          const own = (x, y) => DIRS.filter(([dx, dy]) => taken.get(key(x + dx, y + dy)) === it).length;
-          score = ([x, y]) => Math.hypot(x, y) - 0.9 * own(x, y) + 0.8 * r();
+    const grow = (list, cx, cy, ok) => {
+      const free = (x, y) => !reserved.has(key(x, y)) && !taken.has(key(x, y)) && ok(x, y);
+      for (const it of list) {
+        it.cells = [];
+        for (let k = 0; k < it.nb; k++) {
+          let cands = [];
+          let score;
+          if (k > 0) {
+            for (const [x, y] of it.cells) for (const [dx, dy] of DIRS) if (free(x + dx, y + dy)) cands.push([x + dx, y + dy]);
+            const own = (x, y) => DIRS.filter(([dx, dy]) => taken.get(key(x + dx, y + dy)) === it).length;
+            score = ([x, y]) => Math.hypot(x - cx, y - cy) - 0.9 * own(x, y) + 0.8 * r();
+          }
+          if (!cands.length) {
+            for (let rad = span + Math.ceil(Math.hypot(cx, cy)); !cands.length; rad += 2)
+              for (let y = -rad; y <= rad; y++) for (let x = -rad; x <= rad; x++) if (free(x, y)) cands.push([x, y]);
+            // Across the river (or a lake) still counts as touching the city,
+            // so it spreads over both banks instead of along one.
+            const near = (q) => {
+              if (taken.has(q)) return true;
+              const [qx, qy] = q.split(',').map(Number);
+              return reserved.has(q) && reserved.get(q) !== K.PARK && touches(qx, qy, (q2) => taken.has(q2));
+            };
+            score = ([x, y]) => Math.hypot(x - cx, y - cy) + 0.9 * r() + (taken.size && !touches(x, y, near) ? 2 : 0);
+          }
+          let best = null, bs = Infinity;
+          for (const cell of cands) {
+            const s = score(cell);
+            if (s < bs) [bs, best] = [s, cell];
+          }
+          taken.set(key(...best), it);
+          it.cells.push(best);
         }
-        if (!cands.length) {
-          for (let rad = span; !cands.length; rad += 2)
-            for (let y = -rad; y <= rad; y++) for (let x = -rad; x <= rad; x++) if (free(x, y)) cands.push([x, y]);
-          // Across the river (or a lake) still counts as touching the city,
-          // so it spreads over both banks instead of along one.
-          const near = (q) => {
-            if (taken.has(q)) return true;
-            const [qx, qy] = q.split(',').map(Number);
-            return reserved.has(q) && reserved.get(q) !== K.PARK && touches(qx, qy, (q2) => taken.has(q2));
-          };
-          score = ([x, y]) => Math.hypot(x, y) + 0.9 * r() + (taken.size && !touches(x, y, near) ? 2 : 0);
-        }
-        let best = null, bs = Infinity;
-        for (const cell of cands) {
-          const s = score(cell);
-          if (s < bs) [bs, best] = [s, cell];
-        }
-        taken.set(key(...best), it);
-        it.cells.push(best);
       }
-    }
+    };
+    grow(inner, 0, 0, () => true);
 
-    if (total && total < 6) {
+    const cross = (x, y) => (axis === 0 ? x : y);
+    const along = (x, y) => (axis === 0 ? y : x);
+    if (split) {
+      // The river runs alongside the city on one side; past it, a ridge of
+      // mountains, and past that the outside neighborhoods. The ridge spans
+      // the outside cluster plus a cell either end.
+      const near = [...taken.keys(), ...[...reserved].filter(([, k]) => k !== K.RIVER).map(([q]) => q)];
+      const crosses = near.map((q) => cross(...q.split(',').map(Number)));
+      const edge = side < 0 ? Math.min(...crosses) - 1 : Math.max(...crosses) + 1;
+      river = meander(Math.min(edge, edge + side), Math.max(edge, edge + side), edge);
+      const ridge = edge + 2 * side;
+      const inA = [...taken.keys()].map((q) => along(...q.split(',').map(Number)));
+      const a0 = Math.round((Math.min(...inA) + Math.max(...inA)) / 2);
+      const depth = Math.max(1, Math.round(Math.sqrt(blocks(outer) / Math.PI)));
+      grow(outer, ...at(a0, ridge + side * depth), (x, y) => (cross(x, y) - ridge) * side > 0);
+      const outA = outer.flatMap((it) => it.cells.map((c) => along(...c)));
+      for (let a = Math.min(...outA) - 1; a <= Math.max(...outA) + 1; a++) reserved.set(key(...at(a, ridge)), K.MOUNTAIN);
+    } else if (total && total < 6) {
       // Small city: the river runs right alongside, once we know its edge.
       const cross = [...taken.keys()].map((q) => Number(q.split(',')[axis]));
       const edge = side < 0 ? Math.min(...cross) - 1 : Math.max(...cross) + 1;
@@ -224,9 +266,13 @@ export class City {
       return false;
     };
     const cells = [...taken.keys()].map((q) => [...q.split(',').map(Number), K.LOTS]);
+    const alongs = [...taken.keys(), ...[...reserved].filter(([, k]) => k === K.MOUNTAIN).map(([q]) => q)].map((q) => along(...q.split(',').map(Number)));
     for (const [q, kind] of reserved) {
       const [x, y] = q.split(',').map(Number);
-      if (kind === K.PARK ? touches(x, y, isTaken) : adj8(x, y)) cells.push([x, y, kind]);
+      if (split && kind === K.RIVER) {
+        // The border river runs the full length of the map.
+        if (along(x, y) >= Math.min(...alongs) && along(x, y) <= Math.max(...alongs)) cells.push([x, y, kind]);
+      } else if (kind === K.MOUNTAIN || (kind === K.PARK ? touches(x, y, isTaken) : adj8(x, y))) cells.push([x, y, kind]);
     }
     if (total && !cells.some((p) => p[2] === K.RIVER)) {
       // A river running alongside a small city: bring the stretch beside
@@ -250,6 +296,7 @@ export class City {
     for (const [x, y, kind] of cells) this.cellKind[(y - y0) * this.wb + (x - x0)] = kind;
     this.river = total ? river.map(([x, y]) => [x - x0, y - y0]) : [];
     this.riverAxis = axis;
+    this.riverSide = side; // which side of the river the outside neighborhoods are on
 
     // Each neighborhood owns a list of lots (quarter blocks), in global lot
     // coordinates; building n goes on lots[n]. Lots in a block are taken in
@@ -319,7 +366,9 @@ export class City {
     const cost = (e) => {
       if (roads.has(e)) return 0;
       const [a, b] = sides(e).map(([x, y]) => this.kindAt(x, y));
-      return a === K.LAKE && b === K.LAKE ? 30 : 1;
+      if (a === K.LAKE && b === K.LAKE) return 30;
+      // Over the ridge by a pass between two peaks, rather than around it.
+      return a === K.MOUNTAIN && b === K.MOUNTAIN ? 2 : a === K.MOUNTAIN || b === K.MOUNTAIN ? 1.5 : 1;
     };
 
     for (let guard = 0; guard < 100; guard++) {
@@ -389,7 +438,8 @@ export class City {
     // ones near the middle, straight out to the map edge.
     const nodeT = (n) => MARGIN + n * BLOCK;
     this.highways = [];
-    const lakeBoth = (cellsA, cellsB) => cellsA.some((p, k) => this.kindAt(...p) === K.LAKE && this.kindAt(...cellsB[k]) === K.LAKE);
+    const blocked = (p) => this.kindAt(...p) === K.LAKE || this.kindAt(...p) === K.MOUNTAIN;
+    const lakeBoth = (cellsA, cellsB) => cellsA.some((p, k) => blocked(p) && blocked(cellsB[k]));
     for (const [vertical, toFar] of [[false, false], [false, true], [true, false], [true, true]]) {
       // vertical: highway runs along y (north/south); toFar: toward +x / +y.
       const lines = vertical ? NW : NH, len = vertical ? NH : NW;
@@ -405,7 +455,7 @@ export class City {
         }
         if (end < 0) continue;
         const run = toFar ? [...Array(len - 1 - end).keys()].map((k) => end + k) : [...Array(end).keys()];
-        // Skip lines that would run straight through a lake.
+        // Skip lines that would run straight through a lake or the ridge.
         const a = run.map((k) => (vertical ? [l - 1, k] : [k, l - 1]));
         const b = run.map((k) => (vertical ? [l, k] : [k, l]));
         if (lakeBoth(a, b)) continue;
@@ -446,7 +496,7 @@ export class City {
     if (this.river.length) {
       // Wobble the centres across the flow, run the river well past both
       // map edges, then round off the corners.
-      const ax = this.riverAxis;
+      const ax = this.riverAxis === 0 ? 1 : 0; // index of the coordinate it flows along
       let pts = this.river.map((cell) => {
         const p = centre(cell);
         p[1 - ax] += (r() - 0.5) * 1.2;
@@ -456,6 +506,18 @@ export class City {
       first[ax] -= 40;
       last[ax] += 40;
       pts = chaikin([first, ...pts, last], 3);
+      if (this.split) {
+        // Where the river's centre line crosses each row of tiles along it,
+        // so the ground can tell which bank a tile is on.
+        const n = ax === 1 ? this.rows : this.cols;
+        this.riverLine = new Float32Array(n + 1);
+        for (let i = 0, k = 0; i <= n; i++) {
+          while (k + 2 < pts.length && pts[k + 1][ax] < i) k++;
+          const [a, b] = [pts[k], pts[k + 1]];
+          const t = Math.max(0, Math.min(1, (i - a[ax]) / (b[ax] - a[ax] || 1)));
+          this.riverLine[i] = a[1 - ax] + (b[1 - ax] - a[1 - ax]) * t;
+        }
+      }
       const p1 = r() * 6, p2 = r() * 6;
       let s = 0;
       const rad = pts.map((p, i) => {
@@ -501,6 +563,14 @@ export class City {
     const i = Math.floor(sx), j = Math.floor(sy), u = sx - i, v = sy - j;
     const a = f[j * W + i], b = f[j * W + i + 1], c = f[(j + 1) * W + i], d = f[(j + 1) * W + i + 1];
     return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+  }
+
+  /** True for tile coords on the outside neighborhoods' bank of the river. */
+  farSide(tx, ty) {
+    if (!this.riverLine) return false;
+    const [a, c] = this.riverAxis === 0 ? [ty, tx] : [tx, ty];
+    const i = Math.max(0, Math.min(this.riverLine.length - 1, Math.round(a)));
+    return (c - this.riverLine[i]) * this.riverSide > 0;
   }
 
   /** Owner of global lot (qx, qy), or -1. */
@@ -554,6 +624,8 @@ export class City {
         if (ox === 0 || oy === 0) continue; // grass between unbuilt cells
         const kind = this.kindAt((lx / BLOCK) | 0, (ly / BLOCK) | 0);
         if (kind === K.PARK) this.tiles[i] = T.PARK;
+        // Scree under the mountains, ragged where it meets the grass.
+        if (kind === K.MOUNTAIN && (Math.min(ox, oy, BLOCK - ox, BLOCK - oy) > 1 || hash2(x, y, 11) < 0.5)) this.tiles[i] = T.ROCK;
         if (kind !== K.LOTS) continue;
         // Within a block, offsets 1-3 and 5-7 are lots; 4 is a plaza line.
         // A plaza tile touches 1 (inside a lot row), 2 or 4 (the centre) lots.
@@ -643,23 +715,58 @@ export class City {
     this.byId = new Map(this.buildings.map((b) => [b.id, b]));
   }
 
+  /**
+   * Peaks for each ridge cell: one big mountain, snow-capped when tall
+   * enough, and a couple of foothills. Each stays inside its cell, clear of
+   * the roads (and the pass) around it.
+   */
+  placeMountains() {
+    this.mountains = [];
+    const r = rng(this.seed ^ 0x165667b1);
+    for (let by = 0; by < this.hb; by++)
+      for (let bx = 0; bx < this.wb; bx++) {
+        if (this.kindAt(bx, by) !== K.MOUNTAIN) continue;
+        // Centre of the cell's 7x7 interior.
+        const cx = MARGIN + bx * BLOCK + 4.5, cy = MARGIN + by * BLOCK + 4.5;
+        const ang = r() * Math.PI * 2;
+        for (let k = 0; k < 3; k++) {
+          const big = k === 0;
+          const rad = big ? 2.5 + r() * 0.4 : 1.3 + r() * 0.4;
+          const off = big ? r() * 0.4 : 3.3 - rad;
+          const a = ang + k * 2.2 + r() * 0.6;
+          this.mountains.push({
+            x: cx + Math.cos(a) * off,
+            y: cy + Math.sin(a) * off,
+            r: rad,
+            h: Math.round(big ? 62 + r() * 34 : 22 + r() * 16),
+            seed: (r() * 1e9) | 0,
+          });
+        }
+      }
+  }
+
   placeTrees() {
     this.trees = [];
     const r = rng(this.seed);
+    const underPeak = (tx, ty) => this.mountains.some((m) => Math.hypot(tx - m.x, ty - m.y) < m.r + 0.4);
     for (let y = 0; y < this.rows; y++) {
       for (let x = 0; x < this.cols; x++) {
         const t = this.tiles[this.idx(x, y)];
         let p = 0;
         if (t === T.PARK) p = 0.45;
+        else if (t === T.ROCK) p = 0.12;
         else if (t === T.GRASS) {
           // Fewer trees right next to the roads that cross the margin.
           const nearRoad = this.isRoad(x - 1, y) || this.isRoad(x + 1, y) || this.isRoad(x, y - 1) || this.isRoad(x, y + 1);
           p = nearRoad ? 0.03 : 0.16;
         }
         if (r() < p) {
-          const tx = x + 0.3 + r() * 0.4, ty = y + 0.3 + r() * 0.4, variant = Math.floor(r() * 3);
+          const tx = x + 0.3 + r() * 0.4, ty = y + 0.3 + r() * 0.4;
+          let variant = Math.floor(r() * 3);
+          // Pines on the slopes, and mostly pines in the wilder far country.
+          if (t === T.ROCK || (t === T.GRASS && this.farSide(tx, ty) && variant < 2 && r() < 0.6)) variant = 2;
           // Keep trees off the water and out of the shallows.
-          if (this.waterAt(tx, ty) < -0.5) this.trees.push({ x: tx, y: ty, variant });
+          if (this.waterAt(tx, ty) < -0.5 && !underPeak(tx, ty)) this.trees.push({ x: tx, y: ty, variant });
         }
       }
     }
@@ -799,6 +906,8 @@ export class City {
           const c = stripe ? C.park : C.parkStripe;
           return n < 0.06 ? C.grassDark : n > 0.96 ? C.grassLight : c;
         }
+        case T.ROCK:
+          return n < 0.25 ? C.screeDark : n > 0.85 ? C.farGrassDark : C.scree;
         default: {
           // Dither the shoreline a little so it doesn't look traced.
           const w = this.waterAt(tx, ty) + (n - 0.5) * 0.14;
@@ -807,6 +916,7 @@ export class City {
             return glint ? C.glint : w < 0.35 ? C.shallow : w < 1.1 ? C.water : C.deep;
           }
           if (w > -0.3) return n < 0.3 ? C.bankDark : C.bank;
+          if (this.split && this.farSide(tx, ty)) return n < 0.12 ? C.farGrassDark : n > 0.9 ? C.farGrassLight : C.farGrass;
           return n < 0.12 ? C.grassDark : n > 0.9 ? C.grassLight : C.grass;
         }
       }
@@ -857,7 +967,7 @@ export class City {
 
   /** Signature used to decide when the layout must be rebuilt. */
   static signature(neighborhoods, targets) {
-    return JSON.stringify([neighborhoods.map((d) => [d.name, d.color, d.kind]), targets.map((t) => [t.id, t.neighborhood, t.building, t.color])]);
+    return JSON.stringify([neighborhoods.map((d) => [d.name, d.color, d.kind, !!d.outside]), targets.map((t) => [t.id, t.neighborhood, t.building, t.color])]);
   }
 }
 

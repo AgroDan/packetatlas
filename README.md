@@ -2,144 +2,394 @@
 
 A network monitor whose UI is a 16-bit isometric city. Every service you monitor is a building; the streets around it fill with cars in proportion to its traffic.
 
-- **Targets** (buildings) are declared in YAML, or found by opt-in **discovery**, and grouped into **neighborhoods** (see below).
+- **Targets** (buildings) are declared in YAML, or found by opt-in **discovery** of Docker Compose services and Kubernetes workloads, and grouped into **neighborhoods**.
+- **Inside and outside**: services outside your Docker host or cluster sit across the river from it, behind a mountain ridge, on drier ground. A single bridge and a road over a pass connect the two.
 - **Cars**: inbound cars (rx) drive in and pull into the building; outbound cars (tx) pull out and drive off. Most trips are local, and some come in from or leave toward the edge of the map ("the internet"). Busy services get queues.
 - **Kubernetes / Docker buildings** get one floor per pod / container; lit windows are ready ones. Unless you choose a building, each gets one of five styles picked from its id, so the city looks mixed and stays the same between reloads: offices, brick apartment blocks with water towers, pitched-roof houses (they turn into apartments past three floors), art-deco towers with a setback and spire, and modern blocks with solar, garden or helipad roofs.
 - **Status**: a green, amber or red map pin, plus:
   - **degraded** → a construction site: unfinished top floors as bare steel frame, scaffolding, a tower crane with a moving hook, traffic cones and an amber flasher
   - **down** → on fire: scorched walls, flames from the roof and windows, smoke and embers, and a fire engine out front with flashing lights spraying the roof
-  - **unknown** (not checked yet) → greyed out with dark windows
+  - **unknown** (not checked yet, or the check itself failed) → greyed out with dark windows
+
+**Contents**
+
+- [Quickstart](#quickstart): [standalone](#1-standalone-for-testing) · [Docker Compose](#2-docker-compose) · [Kubernetes](#3-kubernetes-namespace)
+- [Adding to the map](#adding-to-the-map): [checks](#add-a-check) · [neighborhoods](#put-it-in-a-neighborhood) · [inside and outside](#inside-and-outside) · [discovered services](#tune-discovered-buildings) · [where checks run](#where-checks-run) · [splitting config](#split-the-config-across-files)
+- [Reference](#reference): [config file](#config-file) · [checks](#checks) · [traffic](#traffic) · [discovery](#discovery) · [Docker access](#docker-access) · [Kubernetes access](#kubernetes-access) · [agents and a hub](#multiple-clusters-agents-and-a-hub) · [Helm chart](#helm-chart) · [command line and UI](#command-line-and-ui)
+- [Troubleshooting](#troubleshooting) · [Development](#development)
 
 ## Quickstart
 
-### 1. See it running (no setup)
+Pick the one that matches where PacketAtlas will run. All three end with the map at http://localhost:8080. The config is read at startup only, so restart PacketAtlas after editing it.
+
+### 1. Standalone, for testing
+
+**See it with fake data.** No setup needed: `-demo` invents statuses and traffic so you can look around.
 
 ```bash
+git clone https://github.com/AgroDan/packetatlas && cd packetatlas
 go build -o packetatlas ./cmd/packetatlas
 ./packetatlas -config examples/demo.yaml -demo
 ```
 
-Open http://localhost:8080. `-demo` invents statuses and traffic, so you can look around before pointing it at anything real.
+Or, without Go:
 
-### 2. Monitor your first service
+```bash
+docker run --rm -p 8080:8080 -v "$PWD/examples/demo.yaml:/etc/packetatlas.yaml:ro" \
+  ghcr.io/agrodan/packetatlas:latest -config /etc/packetatlas.yaml -demo
+```
 
-Create `packetatlas.yaml` with one target per thing you want to watch. Each target needs a `name` and **one** check block (`http`, `tcp`, `ping`, `kubernetes` or `docker`):
+**Point it at something real.** Create `packetatlas.yaml` with one target per thing to watch. Each target needs a `name` and one check block:
 
 ```yaml
 targets:
   - name: Company website
     http: { url: https://example.com }
+  - name: Office router
+    ping: { host: 192.168.1.1 }
 ```
-
-Run it without `-demo`:
 
 ```bash
 ./packetatlas -config packetatlas.yaml
-```
-
-The building appears grey until its first check finishes (within `defaults.interval`, 15s by default), then turns green, amber or red.
-
-Or run it with Docker:
-
-```bash
+# or
 docker run --rm -p 8080:8080 -v "$PWD/packetatlas.yaml:/etc/packetatlas.yaml:ro" \
   ghcr.io/agrodan/packetatlas:latest -config /etc/packetatlas.yaml
 ```
 
-### 3. Add more checks
+Buildings are grey until their first check finishes (within 15s by default), then turn green, amber or red. Next: [add more checks](#add-a-check) and [group them into neighborhoods](#put-it-in-a-neighborhood).
 
-Add another entry under `targets:`, then restart PacketAtlas. The config is read at startup only.
+### 2. Docker Compose
+
+This adds PacketAtlas to an existing `docker-compose.yml`. Each compose project on the host becomes a neighborhood, with a building for each service showing its containers, their health and their network traffic.
+
+PacketAtlas doesn't get the Docker socket. Access to the socket is root-equivalent. It only needs two read-only API calls, so a [socket-proxy](https://github.com/wollomatic/socket-proxy) holds the socket and allows exactly those calls, and only from the PacketAtlas container. [Docker access](#docker-access) has the details.
+
+**1. Add these stanzas** to your `docker-compose.yml`. Merge the `networks:` entry into yours if you already have one. A complete standalone file is in [`examples/docker-compose.yaml`](examples/docker-compose.yaml).
+
+```yaml
+services:
+  # ... your existing services ...
+
+  socket-proxy:
+    image: wollomatic/socket-proxy:1.13.2
+    restart: unless-stopped
+    user: "65534:${DOCKER_GID:?set DOCKER_GID in .env}"   # group that owns docker.sock
+    mem_limit: 64M
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command:
+      - -listenip=0.0.0.0
+      - -allowfrom=packetatlas            # the service name below; change both together
+      - -allowGET=(/v1\.[0-9]+)?/containers/(json|[0-9a-f]+/stats)
+      - -watchdoginterval=3600
+      - -stoponwatchdog
+    networks: [docker-api]
+
+  packetatlas:
+    image: ghcr.io/agrodan/packetatlas:latest
+    restart: unless-stopped
+    depends_on: [socket-proxy]
+    command: ["-config", "/etc/packetatlas.yaml"]
+    volumes:
+      - ./packetatlas.yaml:/etc/packetatlas.yaml:ro
+    ports:
+      - "8080:8080"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges]
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"   # ping targets without root
+    networks: [docker-api, default]
+
+networks:
+  docker-api:
+    internal: true    # only the proxy and PacketAtlas; no route out
+```
+
+**2. Tell compose which group owns the Docker socket**, in the `.env` file next to `docker-compose.yml`:
+
+```bash
+echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
+```
+
+**3. Create `packetatlas.yaml`** next to `docker-compose.yml`:
+
+```yaml
+docker:
+  host: tcp://socket-proxy:2375     # through the proxy, not the socket
+
+discovery:
+  docker: { enabled: true }         # every compose project on this host
+
+# Optional: things Docker doesn't run, or deeper checks of things it does.
+targets:
+  - name: Web health endpoint
+    http: { url: http://web:8080/healthz }   # compose service names resolve here
+  - name: Router
+    ping: { host: 192.168.1.1 }
+```
+
+**4. Start it** with `docker compose up -d`, and open http://localhost:8080.
+
+Notes:
+
+- **Reaching your services:** PacketAtlas is on the project's `default` network, so HTTP and TCP checks can use compose service names (`http://web:8080`). If a service is only on a custom network, add that network to `packetatlas` too.
+- **Simple ways to place services:** add [labels](#tune-discovered-buildings) to your services to rename them, pick their building, or move them into another neighborhood. For example, `packetatlas.io/neighborhood: "Storefront"`.
+- **Turning off discovery:** to watch only some projects, set `discovery.docker.projects: [myapp]`. To use no discovery at all, list services as [`docker` targets](#docker) instead. They still go through the proxy.
+- **Checking the proxy:** `docker compose logs socket-proxy` shows the active allowlist and any blocked requests.
+
+### 3. Kubernetes namespace
+
+The Helm chart in `chart/packetatlas` runs the map inside the cluster (`mode: server`). This example installs it into the namespace it watches. Install it into its own namespace instead if you'd rather keep it separate.
+
+**1. Write a values file** (`packetatlas-values.yaml`):
+
+```yaml
+mode: server
+
+discovery:
+  namespaces: [shop]                # watch only this namespace; [] = all
+
+config:                             # any PacketAtlas config, merged over the chart's
+  neighborhoods:
+    - name: shop                    # no targets: just colours the "shop" namespace
+      color: "#4f7cc4"
+    - name: External services
+      targets:
+        - name: Payment provider
+          http: { url: https://api.payments.example/health }
+  targets:
+    - name: Orders API health
+      neighborhood: shop
+      http: { url: http://orders.shop.svc.cluster.local/healthz, expect_status: [200] }
+```
+
+**2. Install it** from a clone of this repo:
+
+```bash
+helm upgrade --install packetatlas ./chart/packetatlas -n shop -f packetatlas-values.yaml
+kubectl -n shop port-forward svc/packetatlas 8080:80
+```
+
+Open http://localhost:8080. Every deployment, statefulset and daemonset in `shop` becomes a building, with a floor per pod and traffic per pod. To expose the map without port-forwarding, set `server.ingress.enabled: true` and `server.ingress.host` (see [Helm chart](#helm-chart)).
+
+Notes:
+
+- **RBAC:** the chart creates a read-only **ClusterRole**, so installing it needs permission to create cluster-scoped RBAC. Per-pod traffic comes from the kubelet through `nodes/proxy`, which is cluster-scoped. [Kubernetes access](#kubernetes-access) lists the rules.
+- **Changing the map:** edit the values file and run the same `helm upgrade` command. The pod restarts with the new config.
+- **Tuning workloads:** annotate a workload to rename it, pick its building or move it to another neighborhood. For example, `kubectl -n shop annotate deploy/orders packetatlas.io/building=factory` (see [Tune discovered buildings](#tune-discovered-buildings)).
+- **Several clusters on one map:** run a hub and install the chart in agent mode in each cluster (see [Multiple clusters](#multiple-clusters-agents-and-a-hub)).
+
+## Adding to the map
+
+### Add a check
+
+Each target is one building with a `name` and exactly one check block. These are the common ones:
 
 ```yaml
 targets:
-  # A website or API: up if it answers 2xx/3xx.
+  # A website or API: up on 2xx/3xx.
   - name: Billing API
     http:
       url: https://billing.example.com/healthz
-      expect_status: [200]        # optional: only these codes count as up
-      contains: '"status":"ok"'   # optional: the body must contain this
-    degraded_latency: 800ms       # optional: slower than this → amber (construction site)
+      expect_status: [200]          # optional: only these codes count as up
+      contains: '"status":"ok"'     # optional: body must contain this, else amber
+    degraded_latency: 800ms         # optional: slower than this → amber
 
-  # Anything that listens on a port: databases, SSH, SMTP, …
-  - name: Postgres (RDS)
-    tcp: { address: mydb.abc123.us-east-1.rds.amazonaws.com:5432 }
+  # Anything listening on a port: databases, SSH, SMTP, …
+  - name: Postgres
+    tcp: { address: db.internal:5432 }
 
   # A host that should answer ping.
   - name: Office router
     ping: { host: 192.168.1.1 }
+
+  # A compose service, or a single container by name.
+  - name: Blog
+    docker: { project: blog, service: web }
+
+  # A Kubernetes workload.
+  - name: Orders
+    kubernetes: { namespace: shop, deployment: orders }
 ```
 
-Each target can also set `building:`, `color:`, `interval:` and `timeout:`. The [Checks](#checks) section lists every option.
+Every target can also take these options:
 
-### 4. Group them into neighborhoods
+| Option | Default | Meaning |
+|---|---|---|
+| `neighborhood` | automatic | which neighborhood it goes in (see below) |
+| `outside` | guessed from the host | `true` / `false`: whether it's outside the Docker host or cluster (see [Inside and outside](#inside-and-outside)) |
+| `building` | per check type | `auto`, `office`, `apartment`, `house`, `deco`, `modern`, `tower`, `datacenter`, `factory`, `shop`, `radio` |
+| `color` | | building colour, e.g. `"#c44f4f"` |
+| `interval` | `defaults.interval` (15s) | how often to check |
+| `timeout` | `defaults.timeout` (3s) | how long a check may take |
+| `degraded_latency` | off | turn an up check amber when it is slower than this |
+| `traffic` | | take rx/tx from Prometheus instead (see [Traffic](#traffic)) |
 
-Targets with nothing else to go on land in **Outskirts**. To give related services their own part of the city, nest them in a neighborhood, or give each one a `neighborhood:` field:
+[Checks](#checks) lists every option of every check type.
+
+### Put it in a neighborhood
+
+A neighborhood is a part of the city. Each target lands in exactly one, chosen by the first rule that matches:
+
+1. **You named one.** The target is nested in a `neighborhoods:` entry, has a `neighborhood:` field, or a discovered service carries a `packetatlas.io/neighborhood` label or annotation.
+2. **Its Kubernetes namespace**, for `kubernetes` targets.
+3. **Its compose project**, for `docker` targets with a `project`.
+4. **Outskirts**, the catch-all.
+
+There are three simple ways to put things together. They all give the same result, and you can mix them:
+
+```yaml
+# a) Nest targets under the neighborhood.
+neighborhoods:
+  - name: Home Lab
+    color: "#6aa84f"                  # optional
+    targets:
+      - name: NAS
+        tcp: { address: 192.168.1.10:445 }
+      - name: Router
+        ping: { host: 192.168.1.1 }
+
+# b) Point a top-level target at it.
+targets:
+  - name: Printer
+    neighborhood: Home Lab
+    ping: { host: 192.168.1.30 }
+```
+
+```yaml
+# c) Label a compose service (or annotate a Kubernetes workload) that discovery finds.
+services:
+  pihole:
+    image: pihole/pihole
+    labels:
+      packetatlas.io/neighborhood: "Home Lab"
+```
+
+An entry under `neighborhoods:` with no targets only styles an automatic neighborhood of the same name, such as a namespace or compose project. It can set the colour, or `outside` (see [Inside and outside](#inside-and-outside)):
 
 ```yaml
 neighborhoods:
-  - name: External services
-    color: "#d08a3a"
+  - name: shop          # the "shop" namespace or compose project
+    color: "#4f7cc4"
+```
+
+How the city is laid out:
+
+- **Blocks:** neighborhoods with four or more buildings get whole blocks. Smaller ones share blocks, one lot per building, with plain paving marking the boundary between them.
+- **Growth:** neighborhoods grow outward from the middle as organic clusters of blocks.
+- **Scenery:** a river winds through, crossed by bridges, and a lake and a park appear once the city is big enough. Highways lead to each edge of the map, where through-traffic enters.
+- **Stability:** the layout is seeded from neighborhood names, so it stays the same between reloads.
+- **Labels:** when zoomed out, neighborhood labels say where each one came from ("k8s namespace" or "compose app").
+- **Shared names:** a namespace and a compose project with the same name become one neighborhood.
+- **Across the river:** neighborhoods outside the Docker host or cluster sit on the far bank (see [Inside and outside](#inside-and-outside)).
+- **Unique names:** target names must be unique within a neighborhood.
+
+### Inside and outside
+
+When the map holds both inside and outside services, the river becomes the border:
+
+- **Inside:** services that are part of your Docker host or cluster form the city on one bank.
+- **Outside:** services outside it sit on the far bank, behind a mountain ridge. Examples are SaaS APIs, a VM, your router or a managed database.
+- **Crossing:** one bridge and a road over a pass between the peaks connect the two.
+- **Marking:** the far bank is drier, wilder country. Outside neighborhoods are labelled "outside", and so is each outside building's side panel.
+
+If everything is inside, or everything is outside (for example, a standalone PacketAtlas that only runs HTTP checks), the map is one city as usual.
+
+**Which targets count as outside:**
+
+- **Inside:** `docker` and `kubernetes` targets, and discovered workloads (including those an agent discovers in its cluster).
+- **`http`, `tcp` and `ping` targets** go by their host:
+  - **Inside:** cluster DNS names (`*.svc`, `*.svc.cluster.local`).
+  - **Inside:** bare names like `web` or `orders`, but only when the config uses Docker or Kubernetes. These are usually compose service names or same-namespace services.
+  - **Outside:** everything else, including IP addresses, `localhost` and public or LAN hostnames.
+
+**Which neighborhoods count as outside:** a neighborhood goes across the river when every building in it is outside. A neighborhood that mixes the two stays in the city.
+
+To override the guess, set `outside` on a target or on a neighborhood. The neighborhood setting wins.
+
+```yaml
+neighborhoods:
+  - name: Home Lab
+    outside: true          # the whole neighborhood across the river
     targets:
-      - name: Stripe API
-        http: { url: https://status.stripe.com }
-      - name: Billing API
-        http: { url: https://billing.example.com/healthz }
+      - name: NAS
+        tcp: { address: nas:445 }
 
 targets:
-  - name: Office router
-    neighborhood: External services   # same result as nesting it above
-    ping: { host: 192.168.1.1 }
+  - name: Legacy box
+    outside: false         # treat as inside, even though it has a LAN address
+    tcp: { address: 10.0.0.5:22 }
 ```
 
-### 5. Add discovery, keep your own checks
+For an agent's cluster on a hub, the agent decides what's outside. Its outside neighborhoods (e.g. `prod/External services`) go across the river on the hub's map, alongside the hub's own outside checks.
 
-To map Kubernetes workloads or Docker Compose services automatically, turn on [discovery](#discovery). Declared targets keep working next to discovered ones, so in one config you can discover a cluster and also watch services outside it:
+### Tune discovered buildings
 
-```yaml
-discovery:
-  kubernetes: { enabled: true }       # every deployment/statefulset/daemonset
+Discovery guesses a building from the workload's name and images:
 
-targets:                              # plus things the cluster doesn't run
-  - name: Payment provider
-    neighborhood: External services
-    http: { url: https://api.payments.example/health }
-  - name: Legacy VM
-    neighborhood: External services
-    tcp: { address: 10.20.0.15:443 }
-```
+- Databases and caches (postgres, redis, mongo, …) and statefulsets are datacenters.
+- Gateways and proxies (ingress, traefik, envoy, …) are towers.
+- Workers and queues are factories.
+- Daemonsets are shops.
+- Everything else is `auto`, a mix of styles.
 
-### Monitoring a service outside the cluster
+To change any of that, put these keys in Docker labels on a compose service, or in Kubernetes annotations on a workload:
 
-How you do this depends on how PacketAtlas is deployed. A check always runs **from wherever PacketAtlas (or its agent) is running**, so pick the place that can reach the service.
-
-| Your setup | Where to declare the outside service |
+| Label / annotation | Effect |
 |---|---|
-| A single PacketAtlas binary or container | In its config file, under `targets:` as above. |
-| In a cluster with the chart in `mode=server` | In the chart's `config` value (see below). |
-| A hub plus cluster agents | In the **hub's** config, so it shows as its own neighborhood. If you declare it in an agent's config instead, the check runs from inside that cluster and the building shows up under that cluster's prefix (e.g. `prod/External services`). Do that only for services that only the cluster can reach. |
-
-With the Helm chart, put targets in a values file. They're merged over the generated config, and changing them restarts the pod:
+| `packetatlas.io/ignore: "true"` | never discover this one |
+| `packetatlas.io/discover: "true"` | opt in, when `require_label` / `require_annotation` is set |
+| `packetatlas.io/name` | building label |
+| `packetatlas.io/building` | any [building](#add-a-check) |
+| `packetatlas.io/neighborhood` | place it in a named neighborhood instead |
+| `packetatlas.io/color` | building colour |
 
 ```yaml
-# my-values.yaml
-config:
-  neighborhoods:
-    - name: External services
-      targets:
-        - name: Company website
-          http: { url: https://example.com }
-        - name: Legacy VM
-          tcp: { address: 10.20.0.15:443 }
+# docker-compose.yml
+services:
+  db:
+    image: postgres:16
+    labels:
+      packetatlas.io/name: "Orders database"
+      packetatlas.io/neighborhood: "Storefront"
+  adminer:
+    image: adminer
+    labels:
+      packetatlas.io/ignore: "true"
 ```
 
 ```bash
-helm upgrade --install packetatlas ./chart/packetatlas -n packetatlas --create-namespace \
-  --set mode=server -f my-values.yaml
+# Kubernetes
+kubectl -n shop annotate deploy/orders packetatlas.io/name="Orders API" packetatlas.io/building=tower
 ```
 
-### Keeping configs tidy
+Changes apply on the next discovery scan (30s by default). Compose labels apply when the container is recreated (`docker compose up -d`).
 
-`-config` also accepts a directory. Every `*.yaml` / `*.yml` file in it is loaded in name order: later files override settings, neighborhoods with the same name are merged, and targets are combined. That makes it easy to keep one file per team or per neighborhood:
+To tune a discovered building beyond what labels can do, declare a target for the same workload: the same compose project and service, or the same namespace and deployment/statefulset/daemonset. Your declaration replaces the discovered one.
+
+### Where checks run
+
+A check always runs from wherever PacketAtlas (or its agent) is running, so declare it in a place that can reach the service.
+
+| Your setup | Where to declare an outside service |
+|---|---|
+| A single binary or container, or Docker Compose | its config file, under `targets:` |
+| The Helm chart in `mode: server` | the chart's `config:` value |
+| A hub plus cluster agents | the **hub's** config, so it shows as its own neighborhood. If you declare it in an agent's config, the check runs inside that cluster and shows under that cluster's prefix (e.g. `prod/External services`). Do that only for services that only the cluster can reach. |
+
+### Split the config across files
+
+`-config` also accepts a directory. Every `*.yaml` / `*.yml` file in it is loaded in name order:
+
+- Later files override settings.
+- Neighborhoods with the same name are merged.
+- Targets are combined.
+
+That makes it easy to keep one file per team or neighborhood:
 
 ```
 conf.d/
@@ -148,96 +398,212 @@ conf.d/
   20-home-lab.yaml
 ```
 
-Target names must be unique within a neighborhood.
+In Docker Compose, mount the directory (`./conf.d:/etc/packetatlas:ro`) and pass `-config /etc/packetatlas`.
 
-## Run
+## Reference
 
-```bash
-go build -o packetatlas ./cmd/packetatlas
-./packetatlas -config examples/demo.yaml -demo     # fake data, no cluster needed
-./packetatlas -config packetatlas.yaml             # real checks
-./packetatlas -config ./conf.d/                    # directory of *.yaml files
-./packetatlas -config examples/discovery.yaml      # build the map from what's running
-./packetatlas -config examples/hub.yaml            # accept pushes from cluster agents
-./packetatlas agent -config examples/agent.yaml    # push this cluster to a hub
-```
+### Config file
 
-Open http://localhost:8080. Drag to pan, scroll to zoom, click a building for details, `/` to search. The URL hash deep-links to the selected building.
-
-Flags: `-listen` overrides `server.listen`. `-web web/static` serves the UI from disk, so frontend edits only need a browser refresh, not a rebuild.
-
-## Neighborhoods
-
-Every target lands in exactly one neighborhood, chosen by the first match:
-
-1. **Explicit**: declared inside a `neighborhoods:` entry, or given a `neighborhood:` field
-2. **Kubernetes namespace** (`kubernetes.namespace`)
-3. **docker-compose project** (`docker.project`)
-4. **Outskirts**, the catch-all
+All top-level keys, with their defaults. Everything is optional except that you need at least one target, an enabled discovery source, or an `agents:` list. [`examples/demo.yaml`](examples/demo.yaml) shows every option in context.
 
 ```yaml
-neighborhoods:
-  - name: Home Lab              # custom neighborhood with its own targets
-    targets:
-      - name: Router
-        ping: { host: 192.168.1.1 }
-  - name: prod                  # no targets: just colours the "prod" namespace
-    color: "#4f7cc4"
+server:
+  listen: ":8080"
+  push_interval: 2s         # how often browsers receive fresh state
 
-targets:                        # placed automatically
-  - name: api
-    kubernetes: { namespace: prod, deployment: api }    # → prod
-  - name: web
-    docker: { project: blog, service: web }             # → blog
-  - name: NAS
-    neighborhood: Home Lab                              # → Home Lab
-    tcp: { address: 192.168.1.10:445 }
+defaults:                   # per-target values when a target doesn't set them
+  interval: 15s
+  timeout: 3s
+  history_size: 120         # samples kept per target for the sparklines
+  traffic_max: 50000000     # bytes/s that renders as gridlock (log scale)
+
+docker:
+  host: ""                  # unix://, tcp:// or http(s)://; empty = $DOCKER_HOST, then /var/run/docker.sock
+
+kubernetes:
+  kubeconfig: ""            # empty = in-cluster, then $KUBECONFIG / ~/.kube/config
+  context: ""
+
+prometheus:
+  url: ""                   # needed only for `traffic:` queries
+
+discovery: { ... }          # see Discovery
+agents: [ ... ]             # hub side, see Multiple clusters
+agent: { ... }              # agent side, see Multiple clusters
+neighborhoods: [ ... ]      # see Put it in a neighborhood
+targets: [ ... ]            # see Add a check
 ```
 
-On the map, neighborhoods with four or more buildings get whole blocks; smaller ones share blocks, one lot per building, with plain paving marking the boundary between them. Neighborhoods grow outward from the middle of the map as organic clusters of blocks, with a river winding through (or past, for small cities) crossed by bridges, plus a lake and a park once the city is big enough. Highways run from the city to each edge of the map, where through-traffic enters. The layout is seeded from neighborhood names, so it stays the same between reloads. Neighborhood labels (shown when zoomed out) say where each one came from ("k8s namespace" or "compose app"). If a namespace and a compose project share a name, they become one neighborhood.
+### Checks
 
-## Discovery
+| Block | Measures | Default building |
+|---|---|---|
+| `http` | status code, optional body match, latency | `shop` |
+| `tcp` | connect time | `datacenter` |
+| `ping` | ICMP echo, loss and RTT | `radio` |
+| `docker` | containers running/healthy; per-container rx/tx bytes/s | `auto` |
+| `kubernetes` | pod readiness vs desired replicas; per-pod rx/tx bytes/s | `auto` |
 
-Off by default: without it, the map shows only the targets you declare, and a config with no targets is an error. Turn it on per source:
+A target's `type` is inferred from its block. Every check also turns amber if it's up but slower than the target's `degraded_latency`. A check that can't run at all, such as when the Docker API is unreachable, shows grey (unknown) with the error in the side panel.
+
+#### `http`
+
+```yaml
+http:
+  url: https://example.com/healthz   # required
+  method: GET                        # default GET
+  expect_status: [200, 204]          # default: any 2xx or 3xx
+  contains: ok                       # optional
+  insecure_skip_verify: false        # true: accept any TLS certificate
+```
+
+- **Down:** no response, or a status code outside `expect_status`.
+- **Degraded:** the body (first 1 MiB) doesn't contain `contains`.
+- **Redirects:** followed.
+
+#### `tcp`
+
+```yaml
+tcp:
+  address: db.internal:5432          # required, host:port
+```
+
+Up if the connection opens within `timeout`. Down otherwise.
+
+#### `ping`
+
+```yaml
+ping:
+  host: 192.168.1.1                  # required, name or IP
+  count: 3                           # echoes per check, default 3
+```
+
+Up if all replies arrive, degraded if some are lost, down if none arrive.
+
+PacketAtlas first tries an unprivileged ICMP socket, which needs Linux `net.ipv4.ping_group_range` to include its group. The compose example and the Helm chart both set this. If that fails, it falls back to a raw socket, which needs root or `CAP_NET_RAW`.
+
+#### `docker`
+
+```yaml
+docker:
+  project: blog                      # a whole compose project…
+  service: web                       # …optionally narrowed to one service
+  # container: my-container          # …or one container by exact name instead
+```
+
+The building gets one floor per container:
+
+- **Ready:** a container that is running and not `unhealthy` or `health: starting`.
+- **Up / degraded / down:** up when every container is ready, degraded when only some are (for example while one restarts or is rebuilt), down when none are or no containers exist.
+- **One-shot jobs:** containers that exited with code 0, such as migrations, are ignored.
+- **Traffic:** comes from the Engine stats API. Containers with `network_mode: host` report none.
+
+#### `kubernetes`
+
+```yaml
+kubernetes:
+  namespace: shop                    # default "default"
+  deployment: orders                 # exactly one of: deployment, statefulset,
+  # statefulset / daemonset / service / selector: "app=orders,tier=api"
+```
+
+The building gets one floor per pod:
+
+- **Up / degraded / down:** up when ready pods match the desired replicas, degraded when some are ready, down when none are.
+- **Traffic:** per pod, from the kubelet Summary API. Pods with `hostNetwork: true` report none.
+
+### Traffic
+
+Cars come from rx/tx bytes per second:
+
+- **`docker` and `kubernetes` checks** measure traffic themselves.
+- **Checks without traffic data** (`http`, `tcp`, `ping`) show a light trickle of cars while they're up.
+- **`defaults.traffic_max`** sets the rate that renders as gridlock, on a log scale.
+
+Any target can take its traffic from Prometheus instead, which replaces what the check measures:
+
+```yaml
+prometheus:
+  url: http://prometheus:9090
+
+targets:
+  - name: Ingress
+    http: { url: https://shop.example.com }
+    traffic:
+      rx: sum(rate(nginx_ingress_controller_request_size_sum[1m]))
+      tx: sum(rate(nginx_ingress_controller_response_size_sum[1m]))
+      unit: B/s        # label only; e.g. req/s for request rates
+      max: 10000000    # gridlock value for this target; default defaults.traffic_max
+```
+
+### Discovery
+
+Discovery is off by default. Turn it on per source:
 
 ```yaml
 discovery:
   interval: 30s                 # rescan period
+  docker:
+    enabled: true
+    projects: []                # default: all compose projects
+    exclude_projects: []
+    require_label: false        # true: only containers labelled packetatlas.io/discover=true
   kubernetes:
     enabled: true
     namespaces: []              # default: all
     exclude_namespaces: [...]   # default: kube-system, kube-public, kube-node-lease; [] includes them
     kinds: [deployment, statefulset, daemonset]
     require_annotation: false   # true: only workloads annotated packetatlas.io/discover: "true"
-  docker:
-    enabled: true
-    projects: []                # default: all compose projects
-    exclude_projects: []
-    require_label: false        # true: only containers labelled packetatlas.io/discover=true
 ```
 
-- **Kubernetes**: each deployment, statefulset and daemonset becomes a building in its namespace's neighborhood. Workloads scaled to zero are skipped.
-- **Docker**: each docker-compose service becomes a building in its project's neighborhood. Services whose containers all exited with code 0 count as finished jobs and are skipped; `docker compose down` removes the building, while a crashed or killed service stays and burns.
-- New workloads appear and deleted ones disappear on the next scan. If the API can't be reached, the current buildings stay.
-- A declared target for the same workload (same namespace and deployment/statefulset/daemonset, or same compose project and service) replaces the discovered one, so you can tune a building by hand. Declared neighborhoods keep their colour for discovered buildings.
-- Discovered buildings carry a "discovered" badge in the side panel. Discovery is off in `-demo` mode.
+- **Docker:** each compose service becomes a building in its project's neighborhood. Services whose containers all exited with code 0 are treated as finished jobs and skipped. `docker compose down` removes the building, while a crashed or killed service stays and burns.
+- **Kubernetes:** each deployment, statefulset and daemonset becomes a building in its namespace's neighborhood. Workloads scaled to zero are skipped.
+- **Changes:** new workloads appear and deleted ones disappear on the next scan. If the API can't be reached, the current buildings stay.
+- **Badge:** discovered buildings carry a "discovered" badge in the side panel.
+- **Demo mode:** discovery is off in `-demo` mode.
 
-Buildings are guessed from the workload name and images: databases and caches (postgres, redis, mongo, …) and statefulsets are datacenters, gateways and proxies (ingress, traefik, envoy, …) are towers, workers and queues are factories, daemonsets are shops, and everything else is `auto` (a mix of styles). Override with Kubernetes annotations or Docker labels:
+Discovery doesn't switch itself on: nothing is mapped unless you enable a source, so PacketAtlas never shows more than you asked for. Labels, annotations and overrides are covered in [Tune discovered buildings](#tune-discovered-buildings).
 
-| Annotation / label             | Effect                                                |
-|--------------------------------|-------------------------------------------------------|
-| `packetatlas.io/ignore: "true"`   | never discover this workload                       |
-| `packetatlas.io/discover: "true"` | opt in, when `require_annotation`/`require_label` is set |
-| `packetatlas.io/name`             | building label                                     |
-| `packetatlas.io/building`         | any building below                                 |
-| `packetatlas.io/neighborhood`     | place it in a named neighborhood instead           |
-| `packetatlas.io/color`            | building colour                                    |
+### Docker access
 
-## Agents and the Helm chart
+PacketAtlas uses two Engine API calls, both read-only:
 
-To map a cluster on a PacketAtlas running elsewhere, install the agent in that cluster. It runs discovery and checks locally and pushes the results to the hub (`POST /api/ingest`) every `push_interval`. Connections only go outbound, so the API server isn't exposed and no kubeconfig leaves the cluster. One hub can take any number of clusters.
+- `GET /containers/json`: lists containers, for discovery and status.
+- `GET /containers/{id}/stats?stream=false&one-shot=true`: reads network counters, for traffic.
 
-On the hub, list each cluster with its own token (see `examples/hub.yaml`):
+There are three ways to give it that access, from most to least locked down:
+
+1. **Through socket-proxy (recommended).** This is the [compose quickstart](#2-docker-compose). The proxy's allowlist permits exactly those two paths, and only from the `packetatlas` host on an internal network.
+   - Everything else is refused: inspect, logs, export, exec, images and `/info` get `403`, and any write such as start or stop gets `405`.
+   - The `:ro` on the socket mount does not provide any of that protection, because a read-only socket can still be written to. The allowlist does.
+   - If you rename the `packetatlas` service, change `-allowfrom` to match.
+2. **Rootless Podman.** Set `docker.host: unix:///run/user/<uid>/podman/podman.sock` after `systemctl --user enable --now podman.socket`. Podman serves the same API with no root involved. This option is untested.
+3. **The socket directly.** Mount `/var/run/docker.sock` into the container and add `group_add: ["${DOCKER_GID}"]`, or run the binary as a user in the `docker` group. This works, but it gives PacketAtlas full control of Docker.
+
+### Kubernetes access
+
+The client uses in-cluster config. Otherwise it uses `kubernetes.kubeconfig` / `context`, or `$KUBECONFIG` / `~/.kube/config`, so you can also run the binary on a workstation against a cluster. The chart creates these read-only rules as a ClusterRole:
+
+```yaml
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, nodes]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [nodes/proxy]          # per-pod traffic from the kubelet
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets]
+    verbs: [get, list]                # list: only for discovery
+```
+
+If you manage RBAC yourself (`rbac.create: false`) and set `discovery.kubernetes.namespaces`, a Role in each namespace is enough for status. Traffic still needs `nodes/proxy`, which is cluster-scoped.
+
+### Multiple clusters: agents and a hub
+
+To show several clusters on one map, run one PacketAtlas as the hub and an agent in each cluster. Each agent runs discovery and checks locally and pushes the results to the hub (`POST /api/ingest`) every `push_interval`. Connections only go outbound, so no API server is exposed and no kubeconfig leaves its cluster.
+
+On the hub, list each cluster with its own token ([`examples/hub.yaml`](examples/hub.yaml)):
 
 ```yaml
 agents:
@@ -247,7 +613,7 @@ agents:
     neighborhood_prefix: "prod/"  # the default, "<cluster>/"; "" for none
 ```
 
-Then install the agent in the cluster:
+Then install the agent in each cluster:
 
 ```bash
 helm install packetatlas ./chart/packetatlas -n packetatlas --create-namespace \
@@ -256,78 +622,85 @@ helm install packetatlas ./chart/packetatlas -n packetatlas --create-namespace \
   --set agent.token="$PROD_AGENT_TOKEN"        # or agent.existingSecret
 ```
 
-- **On the map:** the agent's neighborhoods appear on the hub as `prod/<namespace>`, and their buildings carry a "cluster prod" badge.
+Outside Kubernetes, run `packetatlas agent -config agent.yaml` ([`examples/agent.yaml`](examples/agent.yaml)).
+
+- **On the map:** the agent's neighborhoods appear on the hub as `prod/<namespace>`, and their buildings carry a "cluster prod" badge. To colour one, declare `prod/<namespace>` under the hub's `neighborhoods:`.
 - **Updates:** each push replaces the cluster's buildings, so deleted workloads disappear. The agent's first push waits for its first discovery scan.
 - **Outages:** if an agent stops pushing for `stale_after`, its buildings go grey (unknown) and show how long it has been silent.
 - **History:** the hub keeps its own history for agent buildings; agents don't send theirs.
 - **Health:** the agent pod is Ready once the hub has accepted a push. `/healthz` and `/readyz` are on `agent.listen` (default `:8081`).
-- **Rejected pushes:** wrong tokens get `401`. A token used with another cluster's name gets `403`. If the agent and hub are on different report versions, the push gets `400` and you upgrade the older side.
+- **Rejected pushes:** a wrong token gets `401`. A token used with another cluster's name gets `403`. If the agent and hub are on different report versions, the push gets `400`; upgrade the older side.
 - **Security:** use HTTPS for the hub, because the token goes with every push. The agent warns about plain `http://`. `agent.caBundle` (chart) or `agent.ca_file` trusts a private CA.
 
-The chart can also run the whole map inside the cluster with `--set mode=server`. That adds a Service, plus an optional Ingress (`server.ingress.*`). Chart values:
+### Helm chart
 
-| Value | Meaning |
+The chart runs in one of two modes:
+
+- **`agent` (default):** discovers the cluster and pushes to a hub.
+- **`server`:** runs the whole map in the cluster, with a Service and an optional Ingress.
+
+| Value | Default | Meaning |
+|---|---|---|
+| `mode` | `agent` | `agent` or `server` |
+| `agent.hub`, `agent.cluster` | | where to push and as which cluster (agent mode, required) |
+| `agent.token` / `agent.existingSecret` (+ `existingSecretKey`) | | the cluster's token; mounted as a file |
+| `agent.pushInterval`, `agent.caBundle`, `agent.insecureSkipVerify` | `10s`, `""`, `false` | |
+| `discovery.enabled`, `interval`, `namespaces`, `excludeNamespaces`, `kinds`, `requireAnnotation` | on, all namespaces | Kubernetes discovery |
+| `config` | `{}` | any PacketAtlas config, merged over the chart's: targets, neighborhoods, defaults, prometheus, `agents:` for a server-mode hub |
+| `extraEnv` | `[]` | e.g. Secret-backed variables for `token_env` |
+| `server.service.type`, `server.service.port` | `ClusterIP`, `80` | |
+| `server.ingress.enabled`, `className`, `annotations`, `host`, `tls` | off | |
+| `image.tag`, `image.pullPolicy` | `latest`, `Always` | pin e.g. `0.1.0` with `IfNotPresent` |
+| `rbac.create`, `serviceAccount.*`, `resources`, `nodeSelector`, `tolerations`, `affinity` | | the usual |
+
+The pod runs as non-root (UID 65532) on a read-only filesystem with every capability dropped, and sets `net.ipv4.ping_group_range` so ping works.
+
+Images: CI publishes `ghcr.io/agrodan/packetatlas:latest` from `main`. Pushing a `v0.1.0` git tag also publishes `:0.1.0`.
+
+### Command line and UI
+
+```
+packetatlas [-config FILE|DIR] [-listen ADDR] [-demo] [-web DIR]
+packetatlas agent -config FILE
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-config` | `packetatlas.yaml` | config file, or a directory of `*.yaml` files |
+| `-listen` | `server.listen` | listen address |
+| `-demo` | off | simulate every check with fake data |
+| `-web` | embedded | serve the UI from this directory (UI development) |
+
+**In the browser:**
+
+- Drag to pan, scroll to zoom, and click a building for details: its pods or containers, latency, a traffic sparkline, its status history and the last error.
+- Press `/` to search.
+- The URL hash deep-links to the selected building.
+
+**HTTP endpoints:** `/api/state` returns the current state as JSON, and `/api/stream` streams it as server-sent events, if you want to script against it.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
 |---|---|
-| `mode` | `agent` (default) or `server` |
-| `agent.hub`, `agent.cluster` | where to push and as which cluster (agent mode, required) |
-| `agent.token` / `agent.existingSecret` (+ `existingSecretKey`) | the cluster's token; mounted as a file |
-| `discovery.*` | `enabled`, `interval`, `namespaces`, `excludeNamespaces`, `kinds`, `requireAnnotation` |
-| `config` | extra PacketAtlas YAML merged over the generated config: targets, neighborhoods, `agents:` for a server-mode hub, … |
-| `extraEnv` | e.g. Secret-backed `token_env` variables for a server-mode hub's `agents:` |
+| `config defines no targets` at startup | Add a target, enable a discovery source, or list `agents:`. |
+| A building stays grey | Its first check hasn't finished, or the check couldn't run. Click it: the side panel shows the error. |
+| Docker buildings grey, with a `403 Forbidden` error | socket-proxy refused the request. The PacketAtlas service must be named as in `-allowfrom`, and both must be on the `docker-api` network. `docker compose logs socket-proxy` shows the refusals. |
+| socket-proxy logs `permission denied` on `docker.sock` | `DOCKER_GID` doesn't match the socket's group. Re-run `stat -c %g /var/run/docker.sock`. |
+| No compose services appear | Discovery isn't enabled, `projects:` filters them out, or they carry `packetatlas.io/ignore`. Only containers with compose labels are discovered. Declare others as `docker: { container: name }`. |
+| Ping is always down | ICMP is blocked on the path, or the process can't open an ICMP socket. Set the `ping_group_range` sysctl as in the examples, or give it `CAP_NET_RAW`. |
+| A Docker or Kubernetes building has no cars | It uses host networking, which has no per-container counters. In Kubernetes, check the `nodes/proxy` RBAC rule. Or take traffic from [Prometheus](#traffic). |
+| HTTP check to a compose service fails to resolve | PacketAtlas isn't on that service's network. Add the network to the `packetatlas` service. |
+| Agent pushes rejected | `401`: wrong token. `403`: token belongs to another cluster. `400`: version mismatch, so upgrade the older side. |
 
-The pod runs as non-root on a read-only filesystem with every capability dropped. It sets `net.ipv4.ping_group_range` so ping targets work without root. It needs read-only RBAC: the ClusterRole above plus `list` on workloads. The chart pulls `ghcr.io/agrodan/packetatlas:latest`, which CI publishes from `main`. Pushing a `v0.1.0` git tag also publishes `:0.1.0`; pin it with `--set image.tag=0.1.0 --set image.pullPolicy=IfNotPresent`. To build the image yourself: `docker build -t ghcr.io/agrodan/packetatlas:dev .`.
+## Development
 
-## Checks
-
-| Block        | Measures                                                                 | Default building |
-|--------------|--------------------------------------------------------------------------|------------------|
-| `kubernetes` | pod readiness vs desired replicas; per-pod rx/tx bytes/s from the kubelet | `auto`           |
-| `docker`     | container running/healthy; per-container rx/tx bytes/s from Engine stats  | `auto`           |
-| `ping`       | ICMP echo, loss and RTT                                                  | `radio`          |
-| `http`       | status code (default 2xx/3xx or `expect_status`), optional `contains`    | `shop`           |
-| `tcp`        | connect time                                                             | `datacenter`     |
-
-Buildings: `auto`, `office`, `apartment`, `house`, `deco`, `modern`, `tower`, `datacenter`, `factory`, `shop`, `radio`. `auto` picks one of the five multi-storey styles from the target's id.
-
-A target's `type` is inferred from which block it has. Common per-target options are `interval`, `timeout`, `degraded_latency`, `building` and `color`. See `examples/demo.yaml` for every option.
-
-**Kubernetes** pods are selected with exactly one of `deployment`, `statefulset`, `daemonset`, `service` or `selector`. Traffic comes from the kubelet Summary API (`nodes/proxy`). Pods with `hostNetwork: true` report no network stats. The client uses in-cluster config, or `kubernetes.kubeconfig` / `context`, or `$KUBECONFIG` / `~/.kube/config`. RBAC needed for in-cluster use:
-
-```yaml
-rules:
-  - apiGroups: [""]
-    resources: [pods, services, nodes]
-    verbs: [get, list]
-  - apiGroups: [""]
-    resources: [nodes/proxy]
-    verbs: [get]
-  - apiGroups: [apps]
-    resources: [deployments, statefulsets, daemonsets]
-    verbs: [get, list]          # list: only for discovery
+```bash
+go build -o packetatlas ./cmd/packetatlas
+go test ./...
+./packetatlas -config examples/demo.yaml -demo -web web/static   # UI edits need only a browser refresh
+docker build -t ghcr.io/agrodan/packetatlas:dev .
 ```
-
-Discovery across all namespaces needs these as a ClusterRole; with `discovery.kubernetes.namespaces` set, a Role in each namespace is enough.
-
-**Docker** containers are selected with `project` (the whole compose app, or narrowed with `service`) or with `container` (an exact name). The client connects to `docker.host` (`unix://`, `tcp://` or `http(s)://`), falling back to `$DOCKER_HOST` and then `/var/run/docker.sock`. Containers that are running and not `unhealthy` or `health: starting` count as ready. Containers that exited with code 0 are treated as finished one-shot jobs and ignored. Host-network containers report no traffic.
-
-**Ping** first tries an unprivileged ICMP socket (Linux `net.ipv4.ping_group_range`), then a raw socket (root / `CAP_NET_RAW`).
-
-**Prometheus traffic**: any target can take its rx/tx from PromQL, which replaces traffic from the check itself:
-
-```yaml
-prometheus:
-  url: http://prometheus:9090
-# on a target:
-traffic:
-  rx: sum(rate(nginx_ingress_controller_request_size_sum[1m]))
-  tx: sum(rate(nginx_ingress_controller_response_size_sum[1m]))
-  unit: B/s        # or e.g. req/s
-  max: 10000000    # value that renders as gridlock (log scale); default defaults.traffic_max
-```
-
-Targets without traffic data (ping, plain HTTP/TCP) show a light trickle of cars while they're up.
-
-## Layout
 
 ```
 cmd/packetatlas/      entry point, flags, `agent` subcommand
@@ -336,6 +709,7 @@ internal/monitor/     scheduler + history, discovery, checkers (kube, docker, pi
 internal/agent/       agent → hub push loop, report format, health endpoints
 internal/server/      /api/state (JSON), /api/stream (SSE), /api/ingest (agent pushes), static UI
 chart/packetatlas/    Helm chart (agent or server mode)
+examples/             demo, discovery, docker-compose + docker, hub and agent configs
 web/static/           embedded UI (plain ES modules, no build step)
   js/pixel.js         pixel buffer + isometric box rasteriser
   js/city.js          organic block layout, roads, river/lakes, BFS paths, ground rendering

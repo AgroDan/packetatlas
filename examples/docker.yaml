@@ -1,0 +1,17 @@
+# PacketAtlas for a Docker host, reaching the Engine API through
+# socket-proxy. Used by examples/docker-compose.yaml.
+
+docker:
+  host: tcp://socket-proxy:2375
+
+discovery:
+  docker:
+    enabled: true
+    # projects: [blog]               # default: all compose projects
+    # exclude_projects: [scratch]
+    # require_label: true            # only containers labelled packetatlas.io/discover=true
+
+# Things outside Docker can sit alongside the discovered services.
+# targets:
+#   - name: Router
+#     ping: { host: 192.168.1.1 }

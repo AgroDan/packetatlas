@@ -261,3 +261,72 @@ agent: { hub: "https://atlas.example.com/", cluster: prod, token_env: PA_TOKEN }
 		t.Error("hub without scheme should fail")
 	}
 }
+
+func TestIsOutside(t *testing.T) {
+	load := func(body string) *Config {
+		t.Helper()
+		cfg, err := Load(write(t, t.TempDir(), "c.yaml", body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	cfg := load(`
+discovery: { docker: { enabled: true } }
+targets:
+  - { name: compose web,   http: { url: "http://web:8080/healthz" } }
+  - { name: cluster svc,   http: { url: "http://orders.shop.svc.cluster.local/" } }
+  - { name: short svc,     tcp: { address: "orders.shop.svc:80" } }
+  - { name: website,       http: { url: "https://example.com" } }
+  - { name: vm,            tcp: { address: "10.20.0.15:443" } }
+  - { name: router,        ping: { host: 192.168.1.1 } }
+  - { name: localhost,     tcp: { address: "localhost:5432" } }
+  - { name: container,     docker: { container: db } }
+  - { name: forced out,    http: { url: "http://web:8080" }, outside: true }
+  - { name: forced in,     http: { url: "https://example.com" }, outside: false }
+`)
+	want := map[string]bool{
+		"compose web": false, "cluster svc": false, "short svc": false,
+		"website": true, "vm": true, "router": true, "localhost": true,
+		"container": false, "forced out": true, "forced in": false,
+	}
+	for _, tg := range cfg.AllTargets() {
+		if got := cfg.IsOutside(tg); got != want[tg.Name] {
+			t.Errorf("%s: outside = %v, want %v", tg.Name, got, want[tg.Name])
+		}
+	}
+
+	// Without Docker or Kubernetes in play, a bare hostname is just a LAN host.
+	cfg = load(`targets: [{ name: nas, ping: { host: nas } }]`)
+	if !cfg.IsOutside(cfg.AllTargets()[0]) {
+		t.Error("bare hostname without containers should be outside")
+	}
+}
+
+func TestNeighborhoodOutsideMerges(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.yaml", `
+neighborhoods:
+  - name: Lab
+    targets: [{ name: nas, tcp: { address: "nas:445" } }]
+  - name: prod
+`)
+	write(t, dir, "b.yaml", `
+neighborhoods:
+  - { name: Lab, outside: false }
+  - { name: prod, outside: true }
+`)
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := cfg.NeighborhoodOutside("Lab"); o == nil || *o {
+		t.Errorf("Lab outside = %v, want false", o)
+	}
+	if o := cfg.NeighborhoodOutside("prod"); o == nil || !*o {
+		t.Errorf("prod (styling only) outside = %v, want true", o)
+	}
+	if o := cfg.NeighborhoodOutside("nope"); o != nil {
+		t.Errorf("unknown neighborhood outside = %v, want nil", o)
+	}
+}

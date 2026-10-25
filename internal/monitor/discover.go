@@ -274,8 +274,16 @@ func (m *Monitor) relayout() {
 		buckets[i] = append(buckets[i], e)
 	}
 	m.order = m.order[:0]
-	for _, b := range buckets {
+	for i, b := range buckets {
 		m.order = append(m.order, b...)
+		if o := m.cfg.NeighborhoodOutside(hoods[i].Name); o != nil {
+			hoods[i].Outside = *o
+			continue
+		}
+		hoods[i].Outside = len(b) > 0
+		for _, e := range b {
+			hoods[i].Outside = hoods[i].Outside && e.outside
+		}
 	}
 	m.hoods = hoods
 }

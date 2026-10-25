@@ -135,8 +135,8 @@ export class UI {
     body.innerHTML = `
       <h2>${esc(t.name)}</h2>
       <div class="sub">
-        <span class="swatch" style="background:${esc(color)}"></span>${esc(t.neighborhood)}${kind ? ` <span class="kind">${kind}</span>` : ''}
-        · ${TYPE_LABEL[t.type] || esc(t.type)} · ${esc(this.r.city?.byId.get(t.id)?.spec?.kind || t.building)}${t.discovered ? ' <span class="kind" title="Found by discovery, not declared in config">discovered</span>' : ''}${t.cluster ? ` <span class="kind" title="Reported by this cluster's agent">cluster ${esc(t.cluster)}</span>` : ''}
+        <span class="swatch" style="background:${esc(color)}"></span>${esc(t.neighborhood)}${kind ? ` <span class="kind">${kind}</span>` : ''}${neighborhood?.outside ? ' <span class="kind" title="Checks something outside the Docker host or cluster, so it sits across the river">outside</span>' : ''}
+        ·${TYPE_LABEL[t.type] || esc(t.type)} · ${esc(this.r.city?.byId.get(t.id)?.spec?.kind || t.building)}${t.discovered ? ' <span class="kind" title="Found by discovery, not declared in config">discovered</span>' : ''}${t.cluster ? ` <span class="kind" title="Reported by this cluster's agent">cluster ${esc(t.cluster)}</span>` : ''}
       </div>
       <div class="state-row">
         <span class="pill" style="--c:${STATE_COLORS[t.state] || STATE_COLORS.unknown}">${esc(t.state)}</span>

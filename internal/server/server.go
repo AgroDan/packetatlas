@@ -33,6 +33,7 @@ type snapshot struct {
 	Generated     time.Time              `json:"generated"`
 	Demo          bool                   `json:"demo"`
 	Discovery     bool                   `json:"discovery"`
+	Environment   string                 `json:"environment"`
 	Neighborhoods []monitor.Neighborhood `json:"neighborhoods"`
 	Targets       []monitor.TargetStatus `json:"targets"`
 }
@@ -49,7 +50,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) snapshot() snapshot {
 	hoods, targets := s.mon.Snapshot()
-	return snapshot{Generated: time.Now(), Demo: s.demo, Discovery: s.cfg.Discovery.Enabled() && !s.demo, Neighborhoods: hoods, Targets: targets}
+	return snapshot{Generated: time.Now(), Demo: s.demo, Discovery: s.cfg.Discovery.Enabled() && !s.demo, Environment: s.cfg.Map.Environment, Neighborhoods: hoods, Targets: targets}
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {

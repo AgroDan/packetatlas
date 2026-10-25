@@ -17,6 +17,10 @@ server:
   listen: ":8080"
   push_interval: 2s       # how often the browser receives fresh state
 
+map:
+  environment: suburban   # suburban, mountains, islands, desert or winter
+                          # (or preview one with ?environment=islands in the URL)
+
 defaults:
   interval: 15s           # check interval (per-target override: interval)
   timeout: 3s

@@ -707,23 +707,77 @@ export function treeSprite(variant) {
     [hexToRgb('#3f8a3a'), hexToRgb('#2f6e2e'), hexToRgb('#62b04f')],
     [hexToRgb('#4c9440'), hexToRgb('#376f30'), hexToRgb('#79bd55')],
     [hexToRgb('#2f7046'), hexToRgb('#235536'), hexToRgb('#4a9363')],
-  ][variant % 3];
+  ][variant === 5 ? 2 : variant % 3];
   // Shadow on the ground.
-  for (let x = -5; x <= 5; x++) for (let y = -1; y <= 1; y++) if (x * x / 25 + y * y / 2 <= 1) buf.set(8 + x + 2, 21 + y, [0, 0, 0], 60);
-  for (let y = 15; y < 22; y++) {
-    buf.set(7, y, trunk);
-    buf.set(8, y, shade(trunk, -0.25));
-  }
-  if (variant === 2) {
-    // Pine: stacked triangles.
+  const sw = variant === 6 ? 4 : 5;
+  for (let x = -sw; x <= sw; x++) for (let y = -1; y <= 1; y++) if (x * x / (sw * sw) + y * y / 2 <= 1) buf.set(8 + x + 2, 21 + y, [0, 0, 0], 60);
+  const stem = () => {
+    for (let y = 15; y < 22; y++) {
+      buf.set(7, y, trunk);
+      buf.set(8, y, shade(trunk, -0.25));
+    }
+  };
+  if (variant === 2 || variant === 5) {
+    // Pine: stacked triangles; the snowy one carries snow on each tier.
+    stem();
+    const snow = hexToRgb('#f4f8fb'), snowShade = hexToRgb('#cad8e4');
     for (let y = 0; y < 17; y++) {
       const w = Math.floor((y % 6) * 0.8 + y * 0.25) + 1;
       for (let x = -w; x <= w; x++) {
-        const c = x < -w / 3 ? greens[2] : x > w / 3 ? greens[1] : greens[0];
-        buf.set(8 + x, y + 1, hash2(x, y, 3) < 0.15 ? greens[1] : c);
+        let c = x < -w / 3 ? greens[2] : x > w / 3 ? greens[1] : greens[0];
+        if (hash2(x, y, 3) < 0.15) c = greens[1];
+        if (variant === 5 && (y % 6 < 2 || (x < 0 && hash2(x, y, 4) < 0.35))) c = x > w / 3 ? snowShade : snow;
+        buf.set(8 + x, y + 1, c);
       }
     }
+  } else if (variant === 3) {
+    // Palm: a leaning, ringed trunk under a crown of drooping fronds.
+    const bark = hexToRgb('#8a6a44');
+    for (let y = 8; y < 22; y++) {
+      const x = 8 + Math.round(((21 - y) / 13) ** 2 * 2.5);
+      buf.set(x, y, y % 3 === 0 ? shade(bark, -0.3) : bark);
+      buf.set(x + 1, y, shade(bark, -0.2));
+    }
+    const leaf = hexToRgb('#3f9a3a'), leafDark = hexToRgb('#2c7430'), leafLight = hexToRgb('#6cc24f');
+    for (const [dx, lift] of [[-7, 2], [-4, 4], [0, 5], [4, 4], [7, 2], [-2, 3], [3, 3]]) {
+      for (let k = 0; k <= 10; k++) {
+        const t = k / 10;
+        const x = 10.5 + dx * t, y = 7 - lift * Math.sin(t * Math.PI * 0.7) + t * t * 6;
+        buf.set(Math.round(x), Math.round(y), t < 0.4 ? leafLight : dx > 0 ? leafDark : leaf);
+        if (t > 0.2 && t < 0.8) buf.set(Math.round(x), Math.round(y) + 1, leafDark);
+      }
+    }
+    buf.set(10, 8, hexToRgb('#5a3c22'));
+    buf.set(11, 9, hexToRgb('#5a3c22'));
+  } else if (variant === 4) {
+    // Saguaro cactus with two arms.
+    const g = hexToRgb('#4f8a3f'), gd = hexToRgb('#3b6e30'), gl = hexToRgb('#73ad57');
+    const col = (x, y0, y1) => {
+      for (let y = y0; y <= y1; y++) {
+        buf.set(x - 1, y, gl);
+        buf.set(x, y, g);
+        buf.set(x + 1, y, gd);
+      }
+    };
+    col(8, 5, 21);
+    col(4, 9, 14);
+    for (let x = 4; x <= 7; x++) for (const y of [14, 15]) buf.set(x, y, y === 14 ? g : gd);
+    col(12, 7, 12);
+    for (let x = 9; x <= 12; x++) for (const y of [12, 13]) buf.set(x, y, y === 12 ? g : gd);
+    for (const [x, y] of [[8, 4], [4, 8], [12, 6]]) buf.set(x, y, g);
+    for (let y = 7; y < 21; y += 3) buf.set(7, y, hexToRgb('#e8e2c0'));
+  } else if (variant === 6) {
+    // Dry desert shrub: a low tangle of olive and brown twigs.
+    const cs = [hexToRgb('#8a7a45'), hexToRgb('#6f6236'), hexToRgb('#a8975a'), hexToRgb('#7a5a3a')];
+    for (let y = 13; y < 22; y++)
+      for (let x = -5; x <= 5; x++) {
+        const dx = x / 5.5, dy = (y - 18) / 4.5;
+        if (dx * dx + dy * dy > 1 - hash2(x, y, 6) * 0.35) continue;
+        if (hash2(x, y, 8) < 0.2) continue;
+        buf.set(8 + x, y, cs[(hash2(x, y, 7) * 4) | 0]);
+      }
   } else {
+    stem();
     for (let y = 0; y < 16; y++) {
       for (let x = -7; x <= 7; x++) {
         const dx = x / 6.8, dy = (y - 8) / 7.5;
@@ -743,24 +797,25 @@ export function treeSprite(variant) {
 // --- mountains -------------------------------------------------------------
 
 const mountainCache = new Map();
+// Mountain styles. snowLine is the fraction of the height above which a
+// peak at least snowMin pixels tall is white; mesas are flat-topped and banded.
+const hex = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === 'string' ? hexToRgb(v) : v]));
 const MTN = {
-  rock: hexToRgb('#857868'),
-  rockHi: hexToRgb('#a69885'),
-  snow: hexToRgb('#eef3f7'),
-  snowShade: hexToRgb('#bccbd9'),
-  veg: hexToRgb('#6a8a3f'),
-  vegDark: hexToRgb('#566f33'),
-  foot: hexToRgb('#7f9a48'), // the far bank's grass, so peaks rise out of it
+  alpine: hex({ rock: '#857868', rockHi: '#a69885', snow: '#eef3f7', snowShade: '#bccbd9', veg: '#6a8a3f', vegDark: '#566f33', snowLine: 0.6, snowMin: 55 }),
+  snowy: hex({ rock: '#868c97', rockHi: '#a7adb8', snow: '#f2f6fa', snowShade: '#c4d1de', veg: '#dfe7ef', vegDark: '#c6d2de', snowLine: 0.32, snowMin: 0 }),
+  mesa: hex({ rock: '#b0623a', rockHi: '#cf7f4c', cap: '#c99059', veg: '#a85d37', vegDark: '#8f4c2c', snowLine: 2, snowMin: 999, flat: 0.8 }),
 };
 
 /**
  * A mountain over a round footprint of radius r tiles, peaking h pixels up.
  * Drawn as a heightfield, back to front, lit like the buildings (from the
  * front-left), with snow above the treeline on tall peaks. cx, cy is the
- * centre of the footprint.
+ * centre of the footprint. Its lowest band is left out so it rises straight
+ * out of whatever ground it stands on.
  */
-export function mountainSprite(r, h, seed) {
-  const k = `${r.toFixed(2)}|${h}|${seed}`;
+export function mountainSprite(r, h, seed, styleName = 'alpine') {
+  const k = `${styleName}|${r.toFixed(2)}|${h}|${seed}`;
+  const st = MTN[styleName] || MTN.alpine;
   if (mountainCache.has(k)) return mountainCache.get(k);
   const rx = r * AX * Math.SQRT2, ry = rx / 2;
   const W = Math.ceil(rx * 2) + 4, cx = W / 2, cy = h + 4;
@@ -784,11 +839,13 @@ export function mountainSprite(r, h, seed) {
     const reach = edge - (px * Math.cos(Math.atan2(dy, dx)) + py * Math.sin(Math.atan2(dy, dx)));
     const t = Math.min(1, Math.hypot(dx, dy) / Math.max(0.5, reach));
     const ridged = 1 - Math.abs(2 * noise(x * 1.3 + 9, y * 1.3 + 9, s1) - 1);
+    // A mesa: steep sides cut off by a flat top.
+    if (st.flat) return (h * Math.min(st.flat, Math.pow(1 - t, 0.45) * (0.92 + 0.12 * ridged))) / st.flat;
     return h * Math.pow(1 - t, 1.1) * (0.78 + 0.32 * ridged);
   };
   const L = [0.25, 0.75, 0.6];
   const Ln = Math.hypot(...L);
-  const tall = h >= 55;
+  const tall = h >= st.snowMin;
   const step = 1 / 24, N = Math.ceil((2 * r) / step);
   const filled = new Uint8Array(buf.w * buf.h);
   // Diagonals of the sample grid, back (small x + y) to front.
@@ -802,11 +859,14 @@ export function mountainSprite(r, h, seed) {
       const nz = 2 * step * AX;
       const lum = (nx * L[0] + ny * L[1] + nz * L[2]) / (Math.hypot(nx, ny, nz) * Ln);
       const f = z / h, wob = noise(x * 3, y * 3, s2) * 0.12;
+      if (f < 0.05) continue;
       let c;
-      if (tall && f > 0.6 + wob) c = lum > 0.55 ? MTN.snow : MTN.snowShade;
-      else if (f < 0.06) c = MTN.foot;
-      else if (f < 0.2 + wob) c = lum > 0.5 ? MTN.veg : MTN.vegDark;
-      else c = lum > 0.75 ? MTN.rockHi : lum > 0.45 ? MTN.rock : shade(MTN.rock, lum > 0.25 ? -0.22 : -0.4);
+      if (tall && f > st.snowLine + wob) c = lum > 0.55 ? st.snow : st.snowShade;
+      else if (st.flat && f > 0.98) c = st.cap;
+      else if (f < 0.2 + wob) c = lum > 0.5 ? st.veg : st.vegDark;
+      else c = lum > 0.75 ? st.rockHi : lum > 0.45 ? st.rock : shade(st.rock, lum > 0.25 ? -0.22 : -0.4);
+      // Sandstone strata.
+      if (st.flat && f < 0.98 && Math.floor(f * 7) % 2) c = shade(c, -0.12);
       const sx = Math.round(cx + (x - y) * AX), sy = Math.round(cy + (x + y) * (AX / 2) - z);
       // A short column under each sample closes the gaps between samples;
       // anything it covers is hidden behind this slope anyway.

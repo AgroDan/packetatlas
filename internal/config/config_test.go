@@ -330,3 +330,22 @@ neighborhoods:
 		t.Errorf("unknown neighborhood outside = %v, want nil", o)
 	}
 }
+
+func TestMapEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := Load(write(t, dir, "a.yaml", `targets: [{ name: web, http: { url: "https://example.com" } }]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Map.Environment != "suburban" {
+		t.Errorf("default environment = %q, want suburban", cfg.Map.Environment)
+	}
+	cfg, err = Load(write(t, dir, "b.yaml", "map: { environment: islands }\ntargets: [{ name: web, http: { url: \"https://example.com\" } }]"))
+	if err != nil || cfg.Map.Environment != "islands" {
+		t.Errorf("environment = %v, %v; want islands", cfg.Map.Environment, err)
+	}
+	_, err = Load(write(t, dir, "c.yaml", "map: { environment: moon }\ntargets: [{ name: web, http: { url: \"https://example.com\" } }]"))
+	if err == nil || !strings.Contains(err.Error(), "map.environment") {
+		t.Errorf("unknown environment: err = %v", err)
+	}
+}

@@ -49,6 +49,7 @@ func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 
 type Config struct {
 	Server     Server     `yaml:"server"`
+	Map        Map        `yaml:"map"`
 	Defaults   Defaults   `yaml:"defaults"`
 	Kubernetes Kubernetes `yaml:"kubernetes"`
 	Docker     Docker     `yaml:"docker"`
@@ -75,6 +76,17 @@ type Server struct {
 	// PushInterval is how often state is streamed to connected browsers.
 	PushInterval Duration `yaml:"push_interval"`
 }
+
+// Map styles the land around the city.
+type Map struct {
+	// Environment is one of Environments: the scenery, and what separates
+	// services inside the Docker host or cluster from those outside it
+	// (a river, mountain range, sea, canyon or frozen river).
+	Environment string `yaml:"environment"`
+}
+
+// Environments lists the map environments; the first is the default.
+var Environments = []string{"suburban", "mountains", "islands", "desert", "winter"}
 
 type Defaults struct {
 	Interval Duration `yaml:"interval"`
@@ -418,6 +430,7 @@ func (c *Config) merge(o *Config) {
 		}
 	}
 	setStr(&c.Server.Listen, o.Server.Listen)
+	setStr(&c.Map.Environment, o.Map.Environment)
 	setDur(&c.Server.PushInterval, o.Server.PushInterval)
 	setDur(&c.Defaults.Interval, o.Defaults.Interval)
 	setDur(&c.Defaults.Timeout, o.Defaults.Timeout)
@@ -489,6 +502,9 @@ func (c *Config) neighborhood(name string) *Neighborhood {
 func (c *Config) applyDefaults() {
 	if c.Server.Listen == "" {
 		c.Server.Listen = ":8080"
+	}
+	if c.Map.Environment == "" {
+		c.Map.Environment = Environments[0]
 	}
 	if c.Server.PushInterval.Duration == 0 {
 		c.Server.PushInterval.Duration = 2 * time.Second
@@ -617,6 +633,9 @@ func slug(s string) string {
 }
 
 func (c *Config) validate() error {
+	if !contains(Environments, c.Map.Environment) {
+		return fmt.Errorf("map.environment: unknown environment %q (want %s)", c.Map.Environment, strings.Join(Environments, ", "))
+	}
 	for _, k := range c.Discovery.Kubernetes.Kinds {
 		if !contains(DiscoveryKinds, k) {
 			return fmt.Errorf("discovery.kubernetes.kinds: unknown kind %q (want %s)", k, strings.Join(DiscoveryKinds, ", "))

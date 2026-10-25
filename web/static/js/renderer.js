@@ -272,7 +272,7 @@ export class Renderer {
     }
     for (const m of this.city.mountains) {
       const p = this.city.project(m.x, m.y);
-      const sp = mountainSprite(m.r, m.h, m.seed);
+      const sp = mountainSprite(m.r, m.h, m.seed, m.style);
       const x = Math.round(p.x - sp.cx), y = Math.round(p.y - sp.cy);
       if (visible(x, y, sp.canvas.width, sp.canvas.height)) items.push({ depth: m.x + m.y, img: sp.canvas, x, y, a: 1 });
     }

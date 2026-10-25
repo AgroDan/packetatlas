@@ -1,6 +1,7 @@
 // DOM chrome around the map: search, info panel, status summary, tooltip.
 
 import { STATE_COLORS } from './sprites.js';
+import { rgbToCss } from './pixel.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
@@ -223,9 +224,18 @@ export class UI {
   }
 
   drawThumb(t) {
-    const b = this.r.city?.byId.get(t.id);
+    const city = this.r.city;
+    const b = city?.byId.get(t.id);
     const cv = $('.thumb', this.panel);
     if (!b?.sprite) return;
+    // The environment's sky over the ground the building stands on: the far
+    // side's for buildings beyond the border.
+    const hero = $('.panel-hero', this.panel);
+    const far = city.farSide(...b.center);
+    hero.style.setProperty('--sky', city.env.sky[0]);
+    hero.style.setProperty('--horizon', city.env.sky[1]);
+    hero.style.setProperty('--ground', rgbToCss(far ? city.C.farGrass : city.C.grass));
+    hero.style.setProperty('--ground-dark', rgbToCss(far ? city.C.farGrassDark : city.C.grassDark));
     const src = b.sprite.canvas;
     const scale = Math.max(2, Math.floor(Math.min(300 / src.width, 190 / src.height)));
     cv.width = src.width * scale;

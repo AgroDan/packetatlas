@@ -7,11 +7,15 @@ const renderer = new Renderer(document.getElementById('map'), document.getElemen
 const ui = new UI(renderer);
 let signature = null;
 
+// ?environment=islands previews another environment without touching config.
+const envOverride = new URLSearchParams(location.search).get('environment');
+
 function apply(snap) {
-  const sig = City.signature(snap.neighborhoods, snap.targets);
+  const env = envOverride || snap.environment;
+  const sig = City.signature(snap.neighborhoods, snap.targets, env);
   if (sig !== signature) {
     signature = sig;
-    const city = new City(snap.neighborhoods, snap.targets);
+    const city = new City(snap.neighborhoods, snap.targets, env);
     renderer.setCity(city, new Traffic(city));
   }
   const empty = document.getElementById('empty');

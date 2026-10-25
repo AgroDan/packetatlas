@@ -3,7 +3,8 @@
 A network monitor whose UI is a 16-bit isometric city. Every service you monitor is a building; the streets around it fill with cars in proportion to its traffic.
 
 - **Targets** (buildings) are declared in YAML, or found by opt-in **discovery** of Docker Compose services and Kubernetes workloads, and grouped into **neighborhoods**.
-- **Inside and outside**: services outside your Docker host or cluster sit across the river from it, behind a mountain ridge, on drier ground. A single bridge and a road over a pass connect the two.
+- **Environments**: the land around the city can be `suburban`, `mountains`, `islands`, `desert` or `winter`.
+- **Inside and outside**: services outside your Docker host or cluster sit apart from the city, beyond a border that depends on the environment: a river, a mountain range, open sea, a canyon or a frozen river.
 - **Cars**: inbound cars (rx) drive in and pull into the building; outbound cars (tx) pull out and drive off. Most trips are local, and some come in from or leave toward the edge of the map ("the internet"). Busy services get queues.
 - **Kubernetes / Docker buildings** get one floor per pod / container; lit windows are ready ones. Unless you choose a building, each gets one of five styles picked from its id, so the city looks mixed and stays the same between reloads: offices, brick apartment blocks with water towers, pitched-roof houses (they turn into apartments past three floors), art-deco towers with a setback and spire, and modern blocks with solar, garden or helipad roofs.
 - **Status**: a green, amber or red map pin, plus:
@@ -14,7 +15,7 @@ A network monitor whose UI is a 16-bit isometric city. Every service you monitor
 **Contents**
 
 - [Quickstart](#quickstart): [standalone](#1-standalone-for-testing) · [Docker Compose](#2-docker-compose) · [Kubernetes](#3-kubernetes-namespace)
-- [Adding to the map](#adding-to-the-map): [checks](#add-a-check) · [neighborhoods](#put-it-in-a-neighborhood) · [inside and outside](#inside-and-outside) · [discovered services](#tune-discovered-buildings) · [where checks run](#where-checks-run) · [splitting config](#split-the-config-across-files)
+- [Adding to the map](#adding-to-the-map): [checks](#add-a-check) · [neighborhoods](#put-it-in-a-neighborhood) · [inside and outside](#inside-and-outside) · [environments](#environments) · [discovered services](#tune-discovered-buildings) · [where checks run](#where-checks-run) · [splitting config](#split-the-config-across-files)
 - [Reference](#reference): [config file](#config-file) · [checks](#checks) · [traffic](#traffic) · [discovery](#discovery) · [Docker access](#docker-access) · [Kubernetes access](#kubernetes-access) · [agents and a hub](#multiple-clusters-agents-and-a-hub) · [Helm chart](#helm-chart) · [command line and UI](#command-line-and-ui)
 - [Troubleshooting](#troubleshooting) · [Development](#development)
 
@@ -281,21 +282,21 @@ How the city is laid out:
 
 - **Blocks:** neighborhoods with four or more buildings get whole blocks. Smaller ones share blocks, one lot per building, with plain paving marking the boundary between them.
 - **Growth:** neighborhoods grow outward from the middle as organic clusters of blocks.
-- **Scenery:** a river winds through, crossed by bridges, and a lake and a park appear once the city is big enough. Highways lead to each edge of the map, where through-traffic enters.
+- **Scenery:** set by the [environment](#environments). Rivers, lakes, peaks or mesas appear once the city is big enough, and on islands the sea surrounds the city. Highways lead to each edge of the map, where through-traffic enters.
 - **Stability:** the layout is seeded from neighborhood names, so it stays the same between reloads.
 - **Labels:** when zoomed out, neighborhood labels say where each one came from ("k8s namespace" or "compose app").
 - **Shared names:** a namespace and a compose project with the same name become one neighborhood.
-- **Across the river:** neighborhoods outside the Docker host or cluster sit on the far bank (see [Inside and outside](#inside-and-outside)).
+- **Across the border:** neighborhoods outside the Docker host or cluster sit on the far side of a river, mountain range, sea or canyon (see [Inside and outside](#inside-and-outside)).
 - **Unique names:** target names must be unique within a neighborhood.
 
 ### Inside and outside
 
-When the map holds both inside and outside services, the river becomes the border:
+When the map holds both inside and outside services, a border runs between them. What the border is depends on the [environment](#environments):
 
-- **Inside:** services that are part of your Docker host or cluster form the city on one bank.
-- **Outside:** services outside it sit on the far bank, behind a mountain ridge. Examples are SaaS APIs, a VM, your router or a managed database.
-- **Crossing:** one bridge and a road over a pass between the peaks connect the two.
-- **Marking:** the far bank is drier, wilder country. Outside neighborhoods are labelled "outside", and so is each outside building's side panel.
+- **Inside:** services that are part of your Docker host or cluster form the city on one side.
+- **Outside:** services outside it sit on the far side. Examples are SaaS APIs, a VM, your router or a managed database.
+- **Crossing:** the two sides are joined by a bridge, or by a road over a mountain pass.
+- **Marking:** the land on the far side is a little different (drier, wilder, or a separate island). Outside neighborhoods are labelled "outside", and so is each outside building's side panel.
 
 If everything is inside, or everything is outside (for example, a standalone PacketAtlas that only runs HTTP checks), the map is one city as usual.
 
@@ -307,14 +308,14 @@ If everything is inside, or everything is outside (for example, a standalone Pac
   - **Inside:** bare names like `web` or `orders`, but only when the config uses Docker or Kubernetes. These are usually compose service names or same-namespace services.
   - **Outside:** everything else, including IP addresses, `localhost` and public or LAN hostnames.
 
-**Which neighborhoods count as outside:** a neighborhood goes across the river when every building in it is outside. A neighborhood that mixes the two stays in the city.
+**Which neighborhoods count as outside:** a neighborhood goes across the border when every building in it is outside. A neighborhood that mixes the two stays in the city.
 
 To override the guess, set `outside` on a target or on a neighborhood. The neighborhood setting wins.
 
 ```yaml
 neighborhoods:
   - name: Home Lab
-    outside: true          # the whole neighborhood across the river
+    outside: true          # the whole neighborhood across the border
     targets:
       - name: NAS
         tcp: { address: nas:445 }
@@ -325,7 +326,32 @@ targets:
     tcp: { address: 10.0.0.5:22 }
 ```
 
-For an agent's cluster on a hub, the agent decides what's outside. Its outside neighborhoods (e.g. `prod/External services`) go across the river on the hub's map, alongside the hub's own outside checks.
+For an agent's cluster on a hub, the agent decides what's outside. Its outside neighborhoods (e.g. `prod/External services`) go across the border on the hub's map, alongside the hub's own outside checks.
+
+### Environments
+
+The environment sets the land around the city, and the border between inside and outside services:
+
+| `environment` | Land | Border between inside and outside |
+|---|---|---|
+| `suburban` (default) | green lawns, parks, a river and lakes, leafy trees | a river, crossed by a bridge |
+| `mountains` | alpine meadows, pines and scattered peaks | a mountain range of tall, snow-capped peaks, crossed by a road over a pass |
+| `islands` | a tropical island with beaches and palms, in open sea | the sea: outside services are on an island of their own, reached by a long bridge |
+| `desert` | sand, cacti, mesas and oases | a canyon, crossed by a bridge |
+| `winter` | snow, snowy pines and peaks, frozen lakes | a frozen river, crossed by a bridge |
+
+Set it in the config:
+
+```yaml
+map:
+  environment: islands
+```
+
+- **Helm chart:** put it under `config:` (`config: { map: { environment: islands } }`).
+- **Preview:** to try one without changing the config, add `?environment=<name>` to the map's URL, for example `http://localhost:8080/?environment=desert`. Only your browser changes.
+- **Effect on the layout:** the city's blocks don't depend on the environment, except in `islands`, which has no river or lakes. Switching between the other environments keeps every building where it was.
+- **Side panel:** a building's preview uses the environment's sky and the ground the building stands on, so outside buildings show the far side's ground.
+- **Adding an environment:** each one is an entry in [`web/static/js/environments.js`](web/static/js/environments.js): its border (`river`, `canyon`, `ridge` or `sea`), whether the city gets a river and lakes, the scenery on open land, tree types, sky and ground colours. Add its name to `Environments` in `internal/config/config.go` too, so the config accepts it.
 
 ### Tune discovered buildings
 
@@ -410,6 +436,9 @@ All top-level keys, with their defaults. Everything is optional except that you 
 server:
   listen: ":8080"
   push_interval: 2s         # how often browsers receive fresh state
+
+map:
+  environment: suburban     # suburban, mountains, islands, desert or winter; see Environments
 
 defaults:                   # per-target values when a target doesn't set them
   interval: 15s
@@ -712,8 +741,9 @@ chart/packetatlas/    Helm chart (agent or server mode)
 examples/             demo, discovery, docker-compose + docker, hub and agent configs
 web/static/           embedded UI (plain ES modules, no build step)
   js/pixel.js         pixel buffer + isometric box rasteriser
-  js/city.js          organic block layout, roads, river/lakes, BFS paths, ground rendering
-  js/sprites.js       procedural buildings, cars, trees, pins
+  js/city.js          organic block layout, borders, roads, water, BFS paths, ground rendering
+  js/environments.js  the map environments: borders, scenery, trees, palettes
+  js/sprites.js       procedural buildings, cars, trees, mountains and mesas, pins
   js/traffic.js       car spawning, lane following, queueing
   js/renderer.js      camera, depth-sorted drawing, pins/labels, effects, minimap
   js/ui.js            search, info panel, summary chips, tooltip

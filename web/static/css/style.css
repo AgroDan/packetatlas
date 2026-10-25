@@ -182,7 +182,8 @@ button { font: inherit; color: inherit; }
   align-items: flex-end;
   min-height: 170px;
   padding: 16px 0 10px;
-  background: linear-gradient(#7fb6e6, #bfe0f5 70%, #5c9a45 70%, #4f8a3c);
+  /* Set from the map's environment (see UI.drawThumb). */
+  background: linear-gradient(var(--sky, #7fb6e6), var(--horizon, #bfe0f5) 70%, var(--ground, #5c9a45) 70%, var(--ground-dark, #4f8a3c));
 }
 .thumb { image-rendering: pixelated; max-width: 90%; }
 .panel-body { padding: 14px 18px 24px; }

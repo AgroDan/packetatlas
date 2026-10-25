@@ -16,7 +16,7 @@ A network monitor whose UI is a 16-bit isometric city. Every service you monitor
 
 - [Quickstart](#quickstart): [standalone](#1-standalone-for-testing) · [Docker Compose](#2-docker-compose) · [Kubernetes](#3-kubernetes-namespace)
 - [Adding to the map](#adding-to-the-map): [checks](#add-a-check) · [neighborhoods](#put-it-in-a-neighborhood) · [inside and outside](#inside-and-outside) · [environments](#environments) · [discovered services](#tune-discovered-buildings) · [where checks run](#where-checks-run) · [splitting config](#split-the-config-across-files)
-- [Reference](#reference): [config file](#config-file) · [checks](#checks) · [traffic](#traffic) · [discovery](#discovery) · [Docker access](#docker-access) · [Kubernetes access](#kubernetes-access) · [agents and a hub](#multiple-clusters-agents-and-a-hub) · [Helm chart](#helm-chart) · [command line and UI](#command-line-and-ui)
+- [Reference](#reference): [config file](#config-file) · [checks](#checks) · [traffic](#traffic) · [discovery](#discovery) · [Docker access](#docker-access) · [Kubernetes access](#kubernetes-access) · [agents and a hub](#multiple-clusters-agents-and-a-hub) · [Helm chart](#helm-chart) ([all values](docs/helm.md)) · [command line and UI](#command-line-and-ui)
 - [Troubleshooting](#troubleshooting) · [Development](#development)
 
 ## Quickstart
@@ -146,7 +146,7 @@ Notes:
 
 The Helm chart in `chart/packetatlas` runs the map inside the cluster (`mode: server`). This example installs it into the namespace it watches. Install it into its own namespace instead if you'd rather keep it separate.
 
-**1. Write a values file** (`packetatlas-values.yaml`):
+**1. Write a values file** (`packetatlas-values.yaml`). It only needs the settings that differ from the chart's defaults in [`values.yaml`](chart/packetatlas/values.yaml). [docs/helm.md](docs/helm.md) documents every value, with more examples:
 
 ```yaml
 mode: server
@@ -668,6 +668,8 @@ The chart runs in one of two modes:
 - **`agent` (default):** discovers the cluster and pushes to a hub.
 - **`server`:** runs the whole map in the cluster, with a Service and an optional Ingress.
 
+Its defaults are in [`chart/packetatlas/values.yaml`](chart/packetatlas/values.yaml). Put your own settings in a separate values file and pass it with `-f`. **[docs/helm.md](docs/helm.md)** covers every value in detail, with examples for a server, an ingress with TLS, an agent, a hub and a private registry. It also explains how `config:` merges with the chart's generated config. The main values are:
+
 | Value | Default | Meaning |
 |---|---|---|
 | `mode` | `agent` | `agent` or `server` |
@@ -738,6 +740,7 @@ internal/monitor/     scheduler + history, discovery, checkers (kube, docker, pi
 internal/agent/       agent → hub push loop, report format, health endpoints
 internal/server/      /api/state (JSON), /api/stream (SSE), /api/ingest (agent pushes), static UI
 chart/packetatlas/    Helm chart (agent or server mode)
+docs/helm.md          every Helm value, with examples
 examples/             demo, discovery, docker-compose + docker, hub and agent configs
 web/static/           embedded UI (plain ES modules, no build step)
   js/pixel.js         pixel buffer + isometric box rasteriser

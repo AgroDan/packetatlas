@@ -2,5 +2,5 @@ apiVersion: v2
 name: packetatlas
 description: PacketAtlas in Kubernetes. As an agent, maps this cluster onto a PacketAtlas hub elsewhere; as a server, runs the isometric network map in the cluster itself.
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.3.0
+appVersion: "0.3.0"

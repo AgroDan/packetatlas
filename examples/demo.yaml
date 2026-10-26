@@ -77,7 +77,7 @@ neighborhoods:
     color: "#4fa36b"
     targets:
       - name: Router
-        building: fortress              # a chosen landmark (see README: Landmarks)
+        building: fortress              # a chosen landmark (see the wiki: Landmarks)
         ping:
           host: 192.168.1.1
       - name: NAS

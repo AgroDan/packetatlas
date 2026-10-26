@@ -1,11 +1,17 @@
 # Helm values
 
-The chart in [`chart/packetatlas`](../chart/packetatlas) is configured with a values file, like any Helm chart. Its defaults are in [`chart/packetatlas/values.yaml`](../chart/packetatlas/values.yaml).
+The chart is published to GHCR as an OCI chart at `oci://ghcr.io/agrodan/charts/packetatlas`, one version per PacketAtlas release. Its source is [`chart/packetatlas`](../chart/packetatlas). It is configured with a values file, like any Helm chart.
 
-Don't edit that file. Write your own values file with only the settings you want to change, and pass it with `-f`:
+To see the defaults:
 
 ```bash
-helm upgrade --install packetatlas ./chart/packetatlas \
+helm show values oci://ghcr.io/agrodan/charts/packetatlas --version 0.2.0
+```
+
+They're also in [`chart/packetatlas/values.yaml`](../chart/packetatlas/values.yaml). Don't edit that file. Write your own values file with only the settings you want to change, and pass it with `-f`:
+
+```bash
+helm upgrade --install packetatlas oci://ghcr.io/agrodan/charts/packetatlas --version 0.2.0 \
   -n packetatlas --create-namespace -f packetatlas-values.yaml
 ```
 
@@ -15,6 +21,10 @@ Helm merges your file over the defaults:
 - Lists replace the default list entirely.
 
 To change the deployment later, edit your file and re-run the same command. The pod restarts whenever the generated config or the token changes.
+
+To upgrade PacketAtlas, re-run it with the new `--version`. Each chart version runs the image of the same version, so you don't need to set `image.tag`.
+
+To work from a clone of this repo instead, for example to try out chart changes, use `./chart/packetatlas` in place of the `oci://` reference and drop `--version`. The chart in the repo defaults to the `latest` image, rather than a fixed version.
 
 ## Contents
 
@@ -29,10 +39,6 @@ To change the deployment later, edit your file and re-run the same command. The 
 
 ```yaml
 mode: server
-
-image:
-  tag: "0.2.0"
-  pullPolicy: IfNotPresent
 
 discovery:
   namespaces: [shop, payments]       # [] watches every namespace
@@ -147,8 +153,8 @@ The chart refuses to render with any other value.
 | Value | Default | Meaning |
 |---|---|---|
 | `image.repository` | `ghcr.io/agrodan/packetatlas` | |
-| `image.tag` | `latest` | CI publishes `latest` from `main`, and `0.2.0` and so on for each `v*` git tag. `""` uses the chart's `appVersion`. Pin a version in production. |
-| `image.pullPolicy` | `Always` | Needed for `latest` to pick up new builds. Use `IfNotPresent` once the tag is pinned. |
+| `image.tag` | `""` | `""` runs the image matching the chart's version (`appVersion`). CI also publishes `latest` from `main`. In a clone of the repo, this defaults to `latest`. |
+| `image.pullPolicy` | `IfNotPresent` | Use `Always` with `latest`, so that restarts pick up new builds. In a clone of the repo, this defaults to `Always`. |
 | `imagePullSecrets` | `[]` | e.g. `[{ name: registry-login }]` |
 
 ### agent
@@ -275,13 +281,13 @@ kubectl -n packetatlas get configmap packetatlas -o yaml
 Render the chart without installing it:
 
 ```bash
-helm template packetatlas ./chart/packetatlas -f packetatlas-values.yaml
+helm template packetatlas oci://ghcr.io/agrodan/charts/packetatlas --version 0.2.0 -f packetatlas-values.yaml
 ```
 
 A missing `agent.hub`, `agent.cluster` or token in agent mode, or an unknown `mode`, fails here with a clear message rather than at startup. Mistakes inside `config` are only caught when the pod starts. To catch those too, extract the generated config and run it locally:
 
 ```bash
-mkdir -p /tmp/pa && helm template packetatlas ./chart/packetatlas -f packetatlas-values.yaml \
+mkdir -p /tmp/pa && helm template packetatlas oci://ghcr.io/agrodan/charts/packetatlas --version 0.2.0 -f packetatlas-values.yaml \
   -s templates/configmap.yaml | yq '.data["10-values.yaml"]' > /tmp/pa/10-values.yaml
 packetatlas -demo -config /tmp/pa
 ```

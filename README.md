@@ -146,7 +146,7 @@ Notes:
 
 ### 3. Kubernetes namespace
 
-The Helm chart in `chart/packetatlas` runs the map inside the cluster (`mode: server`). This example installs it into the namespace it watches. Install it into its own namespace instead if you'd rather keep it separate.
+The Helm chart runs the map inside the cluster (`mode: server`). It is published to GHCR as an OCI chart, so Helm can install it straight from `oci://ghcr.io/agrodan/charts/packetatlas` without a clone. This example installs it into the namespace it watches. Install it into its own namespace instead if you'd rather keep it separate.
 
 **1. Write a values file** (`packetatlas-values.yaml`). It only needs the settings that differ from the chart's defaults in [`values.yaml`](chart/packetatlas/values.yaml). [docs/helm.md](docs/helm.md) documents every value, with more examples:
 
@@ -170,12 +170,15 @@ config:                             # any PacketAtlas config, merged over the ch
       http: { url: http://orders.shop.svc.cluster.local/healthz, expect_status: [200] }
 ```
 
-**2. Install it** from a clone of this repo:
+**2. Install it:**
 
 ```bash
-helm upgrade --install packetatlas ./chart/packetatlas -n shop -f packetatlas-values.yaml
+helm upgrade --install packetatlas oci://ghcr.io/agrodan/charts/packetatlas --version 0.2.0 \
+  -n shop -f packetatlas-values.yaml
 kubectl -n shop port-forward svc/packetatlas 8080:80
 ```
+
+The chart version is the PacketAtlas version, and the chart runs the image of that same version. To upgrade later, change `--version`. To use a clone of this repo instead, replace the chart reference with `./chart/packetatlas` and drop `--version`.
 
 Open http://localhost:8080. Every deployment, statefulset and daemonset in `shop` becomes a building, with a floor per pod and traffic per pod. To expose the map without port-forwarding, set `server.ingress.enabled: true` and `server.ingress.host` (see [Helm chart](#helm-chart)).
 
@@ -647,7 +650,8 @@ agents:
 Then install the agent in each cluster:
 
 ```bash
-helm install packetatlas ./chart/packetatlas -n packetatlas --create-namespace \
+helm install packetatlas oci://ghcr.io/agrodan/charts/packetatlas --version 0.2.0 \
+  -n packetatlas --create-namespace \
   --set agent.hub=https://atlas.example.com \
   --set agent.cluster=prod \
   --set agent.token="$PROD_AGENT_TOKEN"        # or agent.existingSecret
@@ -670,7 +674,7 @@ The chart runs in one of two modes:
 - **`agent` (default):** discovers the cluster and pushes to a hub.
 - **`server`:** runs the whole map in the cluster, with a Service and an optional Ingress.
 
-Its defaults are in [`chart/packetatlas/values.yaml`](chart/packetatlas/values.yaml). Put your own settings in a separate values file and pass it with `-f`. **[docs/helm.md](docs/helm.md)** covers every value in detail, with examples for a server, an ingress with TLS, an agent, a hub and a private registry. It also explains how `config:` merges with the chart's generated config. The main values are:
+It's published at `oci://ghcr.io/agrodan/charts/packetatlas` for every release; `helm show values oci://ghcr.io/agrodan/charts/packetatlas --version 0.2.0` prints its defaults, which are also in [`chart/packetatlas/values.yaml`](chart/packetatlas/values.yaml). Put your own settings in a separate values file and pass it with `-f`. **[docs/helm.md](docs/helm.md)** covers every value in detail, with examples for a server, an ingress with TLS, an agent, a hub and a private registry. It also explains how `config:` merges with the chart's generated config. The main values are:
 
 | Value | Default | Meaning |
 |---|---|---|
@@ -683,12 +687,12 @@ Its defaults are in [`chart/packetatlas/values.yaml`](chart/packetatlas/values.y
 | `extraEnv` | `[]` | e.g. Secret-backed variables for `token_env` |
 | `server.service.type`, `server.service.port` | `ClusterIP`, `80` | |
 | `server.ingress.enabled`, `className`, `annotations`, `host`, `tls` | off | |
-| `image.tag`, `image.pullPolicy` | `latest`, `Always` | pin e.g. `0.1.0` with `IfNotPresent` |
+| `image.tag`, `image.pullPolicy` | the chart's version, `IfNotPresent` | in a clone of the repo: `latest`, `Always` |
 | `rbac.create`, `serviceAccount.*`, `resources`, `nodeSelector`, `tolerations`, `affinity` | | the usual |
 
 The pod runs as non-root (UID 65532) on a read-only filesystem with every capability dropped, and sets `net.ipv4.ping_group_range` so ping works.
 
-Images: CI publishes `ghcr.io/agrodan/packetatlas:latest` from `main`. Pushing a `v0.1.0` git tag also publishes `:0.1.0`.
+**Releases:** CI publishes the image `ghcr.io/agrodan/packetatlas:latest` from `main`. Pushing a `v0.2.0` git tag also publishes the image `:0.2.0` and the chart `oci://ghcr.io/agrodan/charts/packetatlas` version `0.2.0`. To publish the chart for a tag that predates the chart job, run the workflow by hand (**Actions → Build and push image and chart to GHCR → Run workflow**) with that tag.
 
 ### Command line and UI
 

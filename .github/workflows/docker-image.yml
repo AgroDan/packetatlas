@@ -1,4 +1,4 @@
-name: Build and push image to GHCR
+name: Build and push image and chart to GHCR
 
 on:
   push:
@@ -6,6 +6,12 @@ on:
     tags: [ "v*" ]
   pull_request:
     branches: [ "main" ]
+  # Publishes the chart for a tag that was pushed before the chart job existed.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag whose chart to publish, e.g. v0.2.0"
+        required: true
 
 permissions:
   contents: read
@@ -13,8 +19,9 @@ permissions:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -53,3 +60,43 @@ jobs:
         platforms: linux/amd64,linux/arm64
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+  # Lints the chart on every run; on a v* tag (or a manual run), packages it as
+  # version X.Y.Z and pushes it to oci://ghcr.io/<owner>/charts/packetatlas.
+  chart:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.tag || github.ref }}
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: v3.16.4
+
+    - name: Lint
+      run: |
+        helm lint chart/packetatlas --set mode=server
+        helm lint chart/packetatlas --set agent.hub=https://hub.example --set agent.cluster=ci --set agent.token=lint
+
+    - name: Package
+      if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+      env:
+        TAG: ${{ inputs.tag || github.ref_name }}
+      run: |
+        version="${TAG#v}"
+        # A released chart runs its own image version by default, not "latest".
+        sed -i -E 's/^(  tag:) latest/\1 ""/; s/^(  pullPolicy:) Always .*/\1 IfNotPresent/' chart/packetatlas/values.yaml
+        grep -qx '  tag: ""' chart/packetatlas/values.yaml
+        helm package chart/packetatlas --version "$version" --app-version "$version" -d dist
+
+    - name: Push to GHCR
+      if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+      env:
+        OWNER: ${{ github.repository_owner }}
+      run: |
+        echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+        helm push dist/packetatlas-*.tgz "oci://ghcr.io/${OWNER,,}/charts"

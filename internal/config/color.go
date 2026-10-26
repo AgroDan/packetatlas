@@ -8,9 +8,10 @@ import (
 	"sync"
 )
 
-// warnedColors remembers which bad colours have been logged, so a rescan of
-// discovered services doesn't repeat the warning.
-var warnedColors sync.Map
+// warnedOnce remembers which config warnings (bad colours, a non-landmark
+// building on an important service) have been logged, so a rescan of
+// discovered services doesn't repeat them.
+var warnedOnce sync.Map
 
 // ColorOrDefault is ParseColor for places that must not fail: an unknown
 // colour becomes "", which the map draws in its automatic colour, and a
@@ -18,7 +19,7 @@ var warnedColors sync.Map
 func ColorOrDefault(where, s string) string {
 	hex, err := ParseColor(s)
 	if err != nil {
-		if _, seen := warnedColors.LoadOrStore(where+"\x00"+s, true); !seen {
+		if _, seen := warnedOnce.LoadOrStore(where+"\x00"+s, true); !seen {
 			log.Printf("%s: %v; using the default colour", where, err)
 		}
 	}

@@ -69,12 +69,18 @@ func (m *Monitor) Ingest(cluster, prefix string, hoods []Neighborhood, targets [
 		// Agents send hex, but an older agent may pass through a colour name.
 		t.Color = config.ColorOrDefault(fmt.Sprintf("cluster %q target %q", cluster, t.Name), t.Color)
 		h.Color = config.ColorOrDefault(fmt.Sprintf("cluster %q neighborhood %q", cluster, t.Neighborhood), h.Color)
+		if i := m.cfg.MatchImportant(hood, t.Name); i >= 0 {
+			// The hub's own `important:` list covers agent services too.
+			tg := config.Target{Building: t.Building}
+			m.cfg.MakeImportant(&tg, i)
+			t.Important, t.Building = true, tg.Building
+		}
 		tg := e.target
 		if tg.Name != t.Name || tg.Neighborhood != hood || tg.Building != t.Building ||
-			tg.Color != t.Color || e.autoKind != h.Kind || e.autoColor != h.Color || e.outside != h.Outside {
+			tg.Color != t.Color || tg.Important != t.Important || e.autoKind != h.Kind || e.autoColor != h.Color || e.outside != h.Outside {
 			changed = true
 		}
-		tg.Name, tg.Neighborhood, tg.Type, tg.Building, tg.Color = t.Name, hood, t.Type, t.Building, t.Color
+		tg.Name, tg.Neighborhood, tg.Type, tg.Building, tg.Color, tg.Important = t.Name, hood, t.Type, t.Building, t.Color, t.Important
 		e.autoKind, e.autoColor, e.outside = h.Kind, h.Color, h.Outside
 
 		prev := e.status
@@ -102,5 +108,6 @@ func (m *Monitor) Ingest(cluster, prefix string, hoods []Neighborhood, targets [
 	if changed {
 		m.relayout()
 	}
+	m.checkImportant()
 	return nil
 }

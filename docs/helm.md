@@ -198,6 +198,7 @@ To rename a discovered workload, pick its building or move it to another neighbo
 This is where most of the map's content goes:
 
 - `targets:` and `neighborhoods:`, for checks the chart doesn't discover. See [Add a check](../README.md#add-a-check).
+- `important:`, to show discovered workloads as landmarks, by name. See [Landmarks](../README.md#landmarks-important-services).
 - `map.environment`, for the land around the city. See [Environments](../README.md#environments).
 - `defaults:`, for the default interval, timeout and history size of every check.
 - `prometheus:`, for traffic from Prometheus.

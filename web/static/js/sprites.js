@@ -49,7 +49,25 @@ export const KINDS = {
   factory: { a: 2.5, b: 2, height: 16, pad: 30 },
   shop: { a: 2, b: 1.75, height: 16, pad: 8 },
   radio: { a: 1.25, b: 1.25, height: 9, pad: 50 },
+  // Landmarks, for important services: each takes a whole block. height is
+  // the main body (fire and smoke come from its roof); domes, spires and the
+  // like rise into pad. floors only drive the lit windows.
+  skyscraper: { a: 4.5, b: 4.5, height: 200, floorH: 6, floors: 33, pad: 44, landmark: true },
+  twins: { a: 5.5, b: 5.5, height: 186, floorH: 6, floors: 30, pad: 40, landmark: true },
+  capitol: { a: 5.5, b: 5.5, height: 36, floorH: 8, floors: 4, pad: 96, landmark: true },
+  pylon: { a: 5, b: 5, height: 18, floorH: 12, floors: 14, pad: 214, landmark: true },
+  fortress: { a: 5.5, b: 5.5, height: 30, floorH: 9, floors: 6, pad: 100, landmark: true },
+  arcology: { a: 5.5, b: 5.5, height: 120, floorH: 6, floors: 20, pad: 60, landmark: true },
 };
+
+// Landmark styles for building "landmark" (and important services), picked
+// from the target id like AUTO.
+export const LANDMARKS = Object.keys(KINDS).filter((k) => KINDS[k].landmark);
+
+/** Whether a target (or its status) is drawn as a landmark taking a whole block. */
+export function isLandmark(t) {
+  return !!t.important || t.building === 'landmark' || !!KINDS[t.building]?.landmark;
+}
 
 // Styles for building "auto" (the default for Kubernetes and Docker
 // targets), picked from the target id so a workload always looks the same.
@@ -58,6 +76,7 @@ const AUTO = ['office', 'apartment', 'house', 'deco', 'modern'];
 /** Derive the style, floors and lit floors from a target status. */
 export function buildingSpec(status, id = status.id) {
   let kind = KINDS[status.building] ? status.building : AUTO[strHash(id || '') % AUTO.length];
+  if (isLandmark(status) && !KINDS[kind].landmark) kind = LANDMARKS[strHash(id || '') % LANDMARKS.length];
   // Kubernetes pods and Docker containers each get a floor.
   const hasInstances = status.replicas > 0;
   // A house that outgrows its floors becomes an apartment block.
@@ -65,6 +84,7 @@ export function buildingSpec(status, id = status.id) {
   const k = KINDS[kind];
   const healthFrac = status.state === 'up' ? 1 : status.state === 'degraded' ? 0.5 : 0;
   const frac = hasInstances ? status.ready / status.replicas : healthFrac;
+  if (k.landmark) return { kind, floors: k.floors, lit: Math.round(k.floors * frac), frac, state: status.state };
   if (k.height) return { kind, floors: 0, lit: 0, frac, state: status.state };
   const floors = clamp(hasInstances ? status.replicas * k.perPod : k.base, k.min, k.max);
   const lit = hasInstances ? Math.min(floors, status.ready * k.perPod) : Math.ceil(floors * healthFrac);
@@ -102,7 +122,8 @@ function drawBuilding(spec, colorHex, seed) {
 
   // Under construction: the top floors are still a bare steel frame, and the
   // builder only draws the finished floors beneath it.
-  const frameFloors = underConstruction && spec.floors > 1 ? Math.max(1, Math.round(spec.floors * 0.35)) : 0;
+  // Landmarks keep their silhouette; scaffolding and the crane say enough.
+  const frameFloors = underConstruction && spec.floors > 1 && !k.landmark ? Math.max(1, Math.round(spec.floors * 0.35)) : 0;
   const frameH = frameFloors * (k.floorH || 0);
   const bodyFloors = spec.floors - frameFloors;
   const bodySpec = frameFloors ? { ...spec, floors: bodyFloors, lit: Math.min(spec.lit, bodyFloors) } : spec;
@@ -111,7 +132,7 @@ function drawBuilding(spec, colorHex, seed) {
     buf, ox, oy: oy + frameH, ax, by, h: h - frameH, k, spec: bodySpec, seed, base, wall,
     dead: burning || spec.state === 'unknown', burning, unfinished: frameH > 0,
   };
-  const meta = { beacon: null, smoke: null };
+  const meta = { beacon: null, smoke: null, fire: null };
   BUILDERS[spec.kind](ctx, meta);
   if (frameH) {
     steelFrame(ctx, oy, frameH, k.floorH);
@@ -129,7 +150,7 @@ function drawBuilding(spec, colorHex, seed) {
     beacon: meta.beacon,
     smoke: meta.smoke,
     // Points (sprite pixels) where flames come out of a burning building.
-    fire: burning ? fireEmitters(ctx) : [],
+    fire: burning ? meta.fire || fireEmitters(ctx) : [],
     footprint: [k.a, k.b],
   };
 }
@@ -610,6 +631,339 @@ const BUILDERS = {
     meta.smoke = top;
   },
 };
+
+// --- landmarks -------------------------------------------------------------
+
+/**
+ * A box standing on the footprint at axis-pixel offset (du, dv), raised by
+ * lift above the ground. Returns its top vertex and a mapper from roof
+ * coordinates to sprite pixels.
+ */
+function tier(c, du, dv, w, d, hh, lift, paint) {
+  const x = c.ox + (du - dv);
+  const y = c.oy + c.h + Math.round((du + dv) / 2) - hh - lift;
+  rasterBox(c.buf, x, y, w, d, hh, paint);
+  return { x, y, at: (u, v) => ({ x: x + (u - v), y: y + Math.round((u + v) / 2) }) };
+}
+
+/** Window pane on a landmark: lit at random in proportion to health. */
+function landmarkPane(c, face, col, floor, topRow, glassFc) {
+  const side = face === 'right' ? 50 : 0;
+  if (c.burning) return fireWindow(col, floor + side, topRow, c.seed);
+  if (hash2(col, floor + side, c.seed) < c.spec.frac * 0.6) return topRow ? LIT_HI : LIT;
+  return topRow ? faceColor(SHEEN, face) : glassFc;
+}
+
+/** Glass curtain wall: mullions every `mull` px, a slab every floor. */
+function curtain(c, glass, frame, lift, mull = 4) {
+  const fh = c.k.floorH;
+  return (face, u, v, fw, faceH) => {
+    const fr = faceColor(frame, face);
+    const e = edge(face, u, v, fw, faceH, fr);
+    if (e) return e;
+    const above = lift + faceH - 1 - v;
+    const floor = Math.floor(above / fh), r = above % fh;
+    if (r === 0 || u % mull === 0) return shade(fr, -0.05);
+    return landmarkPane(c, face, Math.floor(u / mull), floor, r === fh - 1, faceColor(glass, face));
+  };
+}
+
+/** Neon trim colour: electric cyan with a hint of the neighborhood colour; dark when the target is. */
+function neon(c) {
+  if (c.burning) return hexToRgb('#ff5a3a');
+  if (c.dead) return shade(DARK, 0.2);
+  return mix([80, 236, 255], c.base, 0.25);
+}
+
+/** Half-ellipsoid dome over the point (cx, cy): radius R across, Rv tall. */
+function dome(buf, cx, cy, R, Rv, color, rib) {
+  for (let py = -Rv; py <= Math.ceil(R / 2); py++)
+    for (let px = -R; px <= R; px++) {
+      const q = py <= 0 ? (px * px) / (R * R) + (py * py) / (Rv * Rv) : (px * px) / (R * R) + (py * py) / ((R * R) / 4);
+      if (q > 1) continue;
+      let col = shade(color, 0.28 - (0.55 * (px + R)) / (2 * R));
+      if (py <= 0 && rib && px % 6 === 0) col = rib;
+      if (py > 0) col = shade(col, -0.2);
+      if (Math.hypot(px + R / 3, py + Rv / 2) < R / 6) col = shade(col, 0.35); // highlight
+      buf.set(cx + px, cy + py, col);
+    }
+}
+
+/** A thin mast from (x, y) upward, with a status beacon on top. */
+function mast(c, meta, x, y, len, color = STEEL) {
+  for (let i = 1; i <= len; i++) c.buf.set(x, y - i, i > len - 3 ? shade(color, 0.3) : shade(color, -0.25));
+  meta.beacon = { x, y: y - len - 1 };
+}
+
+/** Crenellations along a box's top edges, back edges first. */
+function merlons(c, du, dv, w, d, lift, color) {
+  const box = (u, v) => tier(c, du + u, dv + v, 3, 3, 3, lift, (face, uu, vv, fw, fh) =>
+    face === 'top' ? shade(color, 0.12) : edge(face, uu, vv, fw, fh, faceColor(color, face)) || faceColor(color, face));
+  for (let u = 0; u + 3 <= w; u += 6) box(u, 0);
+  for (let v = 6; v + 3 <= d; v += 6) box(0, v);
+  for (let v = 6; v + 3 <= d; v += 6) box(w - 3, v);
+  for (let u = 0; u + 3 <= w; u += 6) box(u, d - 3);
+}
+
+const LANDMARK_BUILDERS = {
+  // A supertall glass tower in four setbacks, with a glowing crown and spire.
+  skyscraper(c, meta) {
+    const { ax, by, seed, base } = c;
+    const frame = mix(base, CONCRETE, c.dead ? 0.2 : 0.55);
+    const glass = mix(GLASS, base, 0.3);
+    const glow = neon(c);
+    const tiers = [[0, 0, 20], [10, 20, 120], [17, 140, 38], [23, 178, 22]];
+    let top;
+    for (const [inset, lift, hh] of tiers) {
+      const w = ax - 2 * inset, d = by - 2 * inset;
+      const roof = roofPaint(w, d, shade(frame, 0.12), mix(ROOF, frame, 0.3), seed);
+      const wall = curtain(c, inset ? glass : shade(glass, 0.08), frame, lift, inset ? 4 : 6);
+      const crown = lift === 178;
+      top = tier(c, inset, inset, w, d, hh, lift, (face, u, v, fw, fh) => {
+        if (face === 'top') return roof(u, v);
+        if (crown && v >= 3 && v < 7 && !edge(face, u, v, fw, fh, frame)) return faceColor(glow, face);
+        return wall(face, u, v, fw, fh);
+      });
+      top.w = w;
+      top.d = d;
+    }
+    const peak = top.at(top.w / 2, top.d / 2);
+    meta.smoke = peak;
+    if (c.unfinished) return (meta.beacon = { x: peak.x, y: peak.y - 3 });
+    roofBox({ ...c, ox: top.x, oy: top.y }, 6, 6, top.w - 12, top.d - 12, 6, frame, glow);
+    mast(c, meta, peak.x, peak.y - 6, 32);
+  },
+
+  // Twin glass towers joined by a sky bridge.
+  twins(c, meta) {
+    const { ax, by, seed, base } = c;
+    const frame = mix(base, CONCRETE, c.dead ? 0.2 : 0.5);
+    const glass = mix(GLASS, base, 0.25);
+    const paving = mix(CONCRETE, base, 0.1);
+    tier(c, 0, 0, ax, by, 6, 0, (face, u, v, fw, fh) =>
+      face === 'top' ? (Math.floor(u / 8) + Math.floor(v / 8)) % 2 ? paving : shade(paving, -0.06) : faceColor(shade(paving, -0.15), face));
+    const tower = (du, tall) => {
+      const hh = tall - 6, w = 30;
+      const t = tier(c, du, 29, w, w, hh, 6, (face, u, v, fw, fh) =>
+        face === 'top' ? roofPaint(w, w, shade(frame, 0.1), mix(ROOF, frame, 0.3), seed)(u, v) : curtain(c, glass, frame, 6)(face, u, v, fw, fh));
+      const cap = tier(c, du + 6, 35, w - 12, w - 12, 10, tall, (face, u, v, fw, fh) =>
+        face === 'top' ? shade(frame, 0.15) : edge(face, u, v, fw, fh, faceColor(frame, face)) || faceColor(u % 3 ? frame : shade(frame, -0.15), face));
+      return { t, cap };
+    };
+    const a = tower(8, 186);
+    // Sky bridge two thirds of the way up, between the towers' facing walls.
+    tier(c, 38, 37, 12, 12, 8, 120, (face, u, v, fw, fh) => {
+      if (face === 'top') return shade(frame, 0.1);
+      const fc = faceColor(frame, face);
+      return edge(face, u, v, fw, fh, fc) || (v >= 2 && v < 6 ? landmarkPane(c, face, u >> 1, 99, v === 2, faceColor(glass, face)) : fc);
+    });
+    const b = tower(50, 176);
+    meta.smoke = a.t.at(15, 15);
+    if (c.unfinished) return (meta.beacon = { ...a.cap.at(9, 9) });
+    const pb = b.cap.at(9, 9);
+    for (let i = 1; i <= 14; i++) c.buf.set(pb.x, pb.y - i, shade(STEEL, -0.25));
+    const pa = a.cap.at(9, 9);
+    mast(c, meta, pa.x, pa.y, 22);
+  },
+
+  // A domed, colonnaded hall with a portico, a drum and a gilded lantern.
+  capitol(c, meta) {
+    const { ax, by, seed, base } = c;
+    const marble = mix([236, 230, 216], base, c.dead ? 0.35 : 0.08);
+    const shadow = shade(marble, -0.38);
+    const gold = c.dead ? shade(marble, -0.25) : GOLD;
+    const colonnade = (lift) => (face, u, v, fw, fh) => {
+      if (face === 'top') return roofPaint(fw, fh, shade(marble, 0.05), mix(ROOF, marble, 0.55), seed)(u, v);
+      const fc = faceColor(marble, face);
+      const e = edge(face, u, v, fw, fh, fc);
+      if (e) return e;
+      if (v < 5) return v === 2 ? faceColor(gold, face) : fc; // entablature
+      if (v >= fh - 3) return shade(fc, -0.08); // plinth
+      const r = u % 7;
+      if (r === 0 || r === 6) return shade(fc, -0.1);
+      if (r <= 2) return fc; // column
+      // Tall windows in the shadows between the columns.
+      if (v > 8 && v < fh - 6) return landmarkPane(c, face, Math.floor(u / 7), Math.floor((fh - v) / 12) + lift, v === 9, faceColor(shadow, face));
+      return faceColor(shadow, face);
+    };
+    tier(c, 0, 0, ax, by, 4, 0, (face, u, v) => (face === 'top' ? shade(marble, -0.08) : faceColor(shade(marble, -0.2 - v * 0.04), face)));
+    tier(c, 6, 6, ax - 12, by - 12, 32, 4, colonnade(0));
+    // A portico projecting from the front-left wall.
+    tier(c, 26, by - 6, 36, 6, 26, 4, colonnade(0));
+    const drum = tier(c, 26, 26, 36, 36, 16, 36, colonnade(4));
+    const top = drum.at(18, 18);
+    meta.smoke = roofPoint(c, ax / 2, by / 2);
+    const domeColor = c.burning ? SOOT : mix(base, [200, 214, 206], c.dead ? 0.6 : 0.25);
+    dome(c.buf, top.x, top.y, 22, 28, domeColor, shade(domeColor, -0.18));
+    // Lantern and flagpole.
+    roofBox({ ...c, ox: top.x, oy: top.y - 28 + 3 }, -3, -3, 6, 6, 6, gold, shade(gold, 0.2));
+    if (c.unfinished) return (meta.beacon = { x: top.x, y: top.y - 34 });
+    const fy = top.y - 34;
+    mast(c, meta, top.x, fy, 14);
+    const flag = c.dead ? shade(base, -0.4) : base;
+    for (let j = 0; j < 5; j++) for (let i = 1; i <= 7; i++) c.buf.set(top.x + i, fy - 13 + j + (i > 4 ? 1 : 0), shade(flag, j === 0 ? 0.2 : 0));
+  },
+
+  // A tapering obelisk of dark glass laced with neon, ringed by halos, with
+  // an orb hovering over its tip.
+  pylon(c, meta) {
+    const { ax, by, seed, base } = c;
+    const body = mix(DARK, base, 0.22);
+    const glow = neon(c);
+    const segs = 14, segH = 12;
+    const cx = c.ox, cy0 = c.oy + c.h + Math.round((ax + by) / 4);
+    // Plinth in two steps, a neon line round each.
+    tier(c, 0, 0, ax, by, 8, 0, (face, u, v, fw, fh) => {
+      if (face === 'top') return u < 2 || v < 2 || u > ax - 2 || v > by - 2 ? glow : hash2(u >> 3, v >> 3, seed) < 0.5 ? body : shade(body, 0.06);
+      return v === 2 ? glow : faceColor(shade(body, -0.1), face);
+    });
+    tier(c, 14, 14, ax - 28, by - 28, 10, 8, (face, u, v, fw, fh) => (face === 'top' ? shade(body, 0.05) : v === 3 ? glow : faceColor(body, face)));
+    const halo = (lift, rx, front) => {
+      const y = cy0 - lift;
+      for (let t = 0; t < 360; t += 1.5) {
+        const a = (t * Math.PI) / 180;
+        if (Math.sin(a) > 0 !== front) continue;
+        c.buf.set(cx + Math.round(Math.cos(a) * rx), y + Math.round(Math.sin(a) * rx * 0.5), front ? glow : shade(glow, -0.35));
+      }
+    };
+    const halos = c.unfinished ? [] : [[70, 30], [130, 22]];
+    for (const [l, r] of halos) halo(l, r, false);
+    meta.fire = [];
+    for (let i = 0; i < segs; i++) {
+      const w = Math.round(34 - i * 2), du = (ax - w) / 2, lift = 18 + i * segH;
+      const lit = !c.dead && hash2(i, 7, seed) < c.spec.frac + 0.1;
+      tier(c, du, du, w, w, segH, lift, (face, u, v, fw, fh) => {
+        if (face === 'top') return shade(body, 0.1);
+        const fc = faceColor(body, face);
+        if (u === 0 || u === fw - 1) return shade(fc, face === 'left' && u === fw - 1 ? 0.25 : -0.3);
+        if (v === 0 || Math.abs(u - fw / 2) < 1) return lit ? faceColor(glow, face) : shade(fc, 0.1);
+        return hash2(u, v + i * segH, seed) < 0.04 ? shade(fc, 0.15) : fc;
+      });
+      if (i % 4 === 1) meta.fire.push({ x: cx + (i % 8 === 1 ? -6 : 6), y: cy0 - lift - 4, roof: i > 8 });
+    }
+    for (const [l, r] of halos) halo(l, r, true);
+    // Tip, then the orb.
+    const tipY = cy0 - 18 - segs * segH - Math.round((34 - segs * 2) / 2);
+    for (let i = 0; i < 10; i++) for (let x = -Math.floor((10 - i) / 3); x <= Math.floor((10 - i) / 3); x++) c.buf.set(cx + x, tipY - i, x ? body : glow);
+    meta.smoke = { x: cx, y: tipY };
+    const oy = tipY - 22;
+    if (!c.unfinished)
+      for (let y = -7; y <= 7; y++)
+        for (let x = -7; x <= 7; x++) {
+          const r = Math.hypot(x, y);
+          if (r <= 7) c.buf.set(cx + x, oy + y, r < 3 ? [255, 255, 255] : shade(glow, (r < 5 ? 0.3 : 0) - (x + 7) * 0.02));
+        }
+    meta.beacon = { x: cx, y: oy - 9 };
+    meta.fire.push({ x: cx, y: tipY, roof: true });
+  },
+
+  // A castle: curtain walls with a gatehouse, corner towers with pointed
+  // roofs in the neighborhood colour, and a keep flying a banner.
+  fortress(c, meta) {
+    const { ax, by, seed, base } = c;
+    const stone = mix([150, 146, 138], base, c.dead ? 0.05 : 0.12);
+    const roofCol = c.burning ? SOOT : c.dead ? shade(base, -0.45) : shade(base, -0.05);
+    const block = (face, u, v, fw, fh, lift, slits) => {
+      if (face === 'top') return hash2(u >> 2, v >> 2, seed) < 0.3 ? shade(stone, -0.04) : shade(stone, 0.06);
+      const fc = faceColor(stone, face);
+      const e = edge(face, u, v, fw, fh, fc);
+      if (e) return e;
+      const above = lift + fh - 1 - v;
+      if (slits && Math.abs(u - fw / 2) < 1 && above % c.k.floorH >= 3 && above % c.k.floorH < 7 && above > 8)
+        return landmarkPane(c, face, Math.round(u), Math.floor(above / c.k.floorH), above % c.k.floorH === 6, faceColor(DARK, face));
+      // Courses of stone.
+      if (above % 4 === 0) return shade(fc, -0.08);
+      return (u + (Math.floor(above / 4) % 2) * 3) % 6 === 0 ? shade(fc, -0.06) : fc;
+    };
+    const wallH = 30, towerH = 52, T = 18, W = 6;
+    const towerAt = (du, dv) => {
+      tier(c, du, dv, T, T, towerH, 0, (f, u, v, fw, fh) => block(f, u, v, fw, fh, 0, true));
+      // Pointed roof, in slices.
+      for (let i = 0; i < 16; i++) {
+        const inset = Math.round((i * (T + 4)) / 32) - 2;
+        if (T - 2 * inset < 2) break;
+        tier(c, du + inset, dv + inset, T - 2 * inset, T - 2 * inset, 1, towerH + i, (face, u, v) =>
+          face === 'top' ? shade(roofCol, 0.15) : faceColor(i % 2 ? roofCol : shade(roofCol, -0.1), face));
+      }
+    };
+    const wall = (du, dv, w, d, gate) =>
+      tier(c, du, dv, w, d, wallH, 0, (f, u, v, fw, fh) => {
+        if (gate && f === 'left' && Math.abs(u - fw / 2) < 6 && v > 10) {
+          // Gatehouse arch with a portcullis.
+          const r = Math.abs(u - fw / 2);
+          if (v > 10 + Math.round(r * r / 9)) return (u + v) % 3 === 0 && !c.dead ? shade(IRON, 0.3) : DARK;
+        }
+        return block(f, u, v, fw, fh, 0, false);
+      });
+    towerAt(0, 0);
+    wall(T, 2, ax - 2 * T, W);
+    wall(2, T, W, by - 2 * T);
+    merlons(c, T, 2, ax - 2 * T, W, wallH, stone);
+    merlons(c, 2, T, W, by - 2 * T, wallH, stone);
+    towerAt(ax - T, 0);
+    towerAt(0, by - T);
+    // The keep.
+    const K = 36, kh = 70, kd = (ax - K) / 2;
+    const keep = tier(c, kd, kd, K, K, kh, 0, (f, u, v, fw, fh) => block(f, u, v, fw, fh, 0, true));
+    merlons(c, kd, kd, K, K, kh, stone);
+    wall(T, by - W - 2, ax - 2 * T, W, true);
+    wall(ax - W - 2, T, W, by - 2 * T);
+    merlons(c, T, by - W - 2, ax - 2 * T, W, wallH, stone);
+    merlons(c, ax - W - 2, T, W, by - 2 * T, wallH, stone);
+    towerAt(ax - T, by - T);
+    const kt = keep.at(K / 2, K / 2);
+    meta.smoke = kt;
+    meta.fire = [{ ...kt, roof: true }, { ...keep.at(8, 26), roof: true }, { ...roofPoint(c, ax / 2, by - 10), y: roofPoint(c, ax / 2, by - 10).y + 6, roof: false }];
+    if (c.unfinished) return (meta.beacon = { x: kt.x, y: kt.y - 4 });
+    mast(c, meta, kt.x, kt.y - 3, 24, WOOD);
+    const flag = c.dead ? shade(base, -0.4) : base;
+    for (let j = 0; j < 7; j++)
+      for (let i = 1; i <= 12 - (j === 3 ? 0 : Math.abs(j - 3)); i++) c.buf.set(kt.x + i, kt.y - 26 + j + (i >> 2), shade(flag, j < 2 ? 0.15 : 0));
+  },
+
+  // A stepped megastructure: terraces of glass ribbon and roof gardens, a
+  // greenhouse dome on top.
+  arcology(c, meta) {
+    const { ax, by, seed, base } = c;
+    const band = mix(base, [240, 240, 236], c.dead ? 0.2 : 0.7);
+    const glass = mix(GLASS, base, 0.2);
+    const green = c.burning ? SOOT : c.dead ? mix(GRASS, [110, 110, 115], 0.5) : GRASS;
+    const steps = 4, rise = 30, step = 10;
+    const gardens = [];
+    for (let i = 0; i < steps; i++) {
+      const inset = i * step, w = ax - 2 * inset, d = by - 2 * inset, lift = i * rise;
+      const t = tier(c, inset, inset, w, d, rise, lift, (face, u, v, fw, fh) => {
+        if (face === 'top') {
+          if (u < 1.5 || v < 1.5 || u > fw - 1.5 || v > fh - 1.5) return shade(band, -0.1);
+          return hash2(u >> 1, v >> 1, seed + i) < 0.25 ? shade(green, -0.15) : green;
+        }
+        const fc = faceColor(band, face);
+        const e = edge(face, u, v, fw, fh, fc);
+        if (e) return e;
+        const above = lift + fh - 1 - v, r = above % c.k.floorH;
+        if (r < 2) return r === 0 ? shade(fc, -0.12) : fc;
+        if (u % 7 === 0) return shade(fc, -0.1);
+        return landmarkPane(c, face, Math.floor(u / 7), Math.floor(above / c.k.floorH), r === c.k.floorH - 1, faceColor(glass, face));
+      });
+      // Trees along the exposed front edges of this terrace's garden.
+      if (i < steps - 1)
+        for (let k = 0; k < 6; k++) {
+          const along = Math.round(4 + hash2(k, i, seed) * (w - 10));
+          gardens.push(k % 2 ? t.at(w - 5, along) : t.at(along, d - 5));
+        }
+    }
+    for (const g of gardens.sort((p, q) => p.y - q.y)) {
+      for (let y = -4; y <= 0; y++) for (let x = -2; x <= 2; x++) if (Math.abs(x) + Math.abs(y + 2) <= 3) c.buf.set(g.x + x, g.y + y, shade(green, -0.05 + (y + 4) * -0.05 + (x < 0 ? 0.1 : 0)));
+    }
+    const top = roofPoint(c, ax / 2, by / 2);
+    meta.smoke = top;
+    if (c.unfinished) return (meta.beacon = { x: top.x, y: top.y - 3 });
+    const domeColor = c.dead ? shade(SHEEN, -0.3) : mix(SHEEN, [190, 240, 255], 0.35);
+    dome(c.buf, top.x, top.y, 16, 18, domeColor, shade(domeColor, 0.3));
+    mast(c, meta, top.x, top.y - 18, 12);
+  },
+};
+Object.assign(BUILDERS, LANDMARK_BUILDERS);
 
 function windowedWall(face, u, v, fw, fh, wall, floorH, spec, seed) {
   const fc = faceColor(wall, face);

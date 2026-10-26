@@ -1,9 +1,12 @@
 package monitor
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/AgroDan/packetatlas/internal/config"
@@ -161,5 +164,70 @@ func TestGuessBuilding(t *testing.T) {
 	}
 	if got := guessBuilding("office", "cache", []string{"redis:7"}); got != "datacenter" {
 		t.Errorf("image hint: got %s", got)
+	}
+}
+
+func TestImportantDiscovered(t *testing.T) {
+	cfg := loadConfig(t, `
+discovery:
+  kubernetes: { enabled: true }
+targets:
+  - name: API
+    kubernetes: { namespace: prod, deployment: api }
+important:
+  - web
+  - { name: prod/db, building: fortress }
+  - api        # configured, not discovered: doesn't count
+  - nothere
+`)
+	cs := fake.NewSimpleClientset(
+		deployment("prod", "api", 1, nil, "api:1"),
+		deployment("prod", "web", 1, nil, "nginx:1"),
+		deployment("prod", "db", 1, nil, "postgres:16"),
+		deployment("prod", "cart", 1, map[string]string{annImportant: "true"}, "cart:1"),
+		deployment("prod", "plain", 1, nil, "plain:1"),
+	)
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+
+	m := &Monitor{cfg: cfg, entries: map[string]*entry{}, importantMissing: map[int]bool{}}
+	m.kube = &kubeClient{cs: cs, stats: &netStats{cs: cs, prev: map[types.UID]netSample{}, rates: map[types.UID]netRate{}}}
+	for _, tg := range cfg.AllTargets() {
+		c, _ := m.newChecker(tg)
+		m.entries[tg.ID] = newEntry(tg, c)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() { cancel(); m.wg.Wait() }()
+	m.ctx = ctx
+	d := m.discoverers()[0]
+	for range 2 { // the second scan mustn't log again
+		list, err := d.discover(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.sync(d.name(), m.prepare(d.name(), list, map[string]bool{}))
+	}
+
+	_, targets := m.Snapshot()
+	got := map[string]string{}
+	for _, s := range targets {
+		if s.Important {
+			got[s.Name] = s.Building
+		}
+	}
+	want := map[string]string{"web": "landmark", "db": "fortress", "cart": "landmark"}
+	if len(got) != len(want) {
+		t.Fatalf("important = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: building = %q, want %q", k, got[k], v)
+		}
+	}
+	for name, n := range map[string]int{`important "api"`: 1, `important "nothere"`: 1, `important "web"`: 0} {
+		if c := strings.Count(logs.String(), name+": no discovered service"); c != n {
+			t.Errorf("%s logged %d times, want %d:\n%s", name, c, n, logs.String())
+		}
 	}
 }

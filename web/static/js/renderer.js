@@ -56,13 +56,13 @@ export class Renderer {
       const spec = buildingSpec(st, b.id);
       const sprite = buildingSprite(spec, b.color, b.id);
       const [a, bb] = sprite.footprint;
-      const p = this.city.project(b.lot[0] + (3 - a) / 2, b.lot[1] + (3 - bb) / 2);
+      const p = this.city.project(b.lot[0] + (b.size - a) / 2, b.lot[1] + (b.size - bb) / 2);
       b.spec = spec;
       b.sprite = sprite;
       b.state = st.state;
       b.drawX = Math.round(p.x - sprite.anchorX);
       b.drawY = Math.round(p.y - sprite.anchorY);
-      b.depth = b.lot[0] + b.lot[1] + 3;
+      b.depth = b.lot[0] + b.lot[1] + b.size;
       b.props = this.siteProps(b, sprite);
     }
   }
@@ -312,11 +312,12 @@ export class Renderer {
     const b = id && this.city.byId.get(id);
     if (!b) return;
     const [x0, y0] = b.lot;
+    const e = b.size + 0.15;
     const pts = [
       this.city.project(x0 - 0.15, y0 - 0.15),
-      this.city.project(x0 + 3.15, y0 - 0.15),
-      this.city.project(x0 + 3.15, y0 + 3.15),
-      this.city.project(x0 - 0.15, y0 + 3.15),
+      this.city.project(x0 + e, y0 - 0.15),
+      this.city.project(x0 + e, y0 + e),
+      this.city.project(x0 - 0.15, y0 + e),
     ];
     const pulse = 0.5 + 0.5 * Math.sin(this.time * 4);
     ctx.beginPath();
@@ -495,17 +496,18 @@ export class Renderer {
   siteProps(b, sprite) {
     const city = this.city;
     const [x0, y0] = b.lot;
+    const n = b.size; // lot edge, in tiles
     if (b.state === 'degraded') {
       // Crane on the lot's front-left edge, cones on the front corner.
       const crane = craneSprite(sprite.height + 22);
-      const p = city.project(x0 + 0.25, y0 + 2.88);
+      const p = city.project(x0 + 0.25, y0 + n - 0.12);
       const cone = coneSprite();
-      const cones = [[2.88, 2.3], [2.88, 2.88], [2.3, 2.88]].map(([dx, dy]) => {
+      const cones = [[n - 0.12, n - 0.7], [n - 0.12, n - 0.12], [n - 0.7, n - 0.12]].map(([dx, dy]) => {
         const q = city.project(x0 + dx, y0 + dy);
         return { x: Math.round(q.x - cone.cx), y: Math.round(q.y - cone.cy), depth: x0 + y0 + dx + dy, img: cone.canvas };
       });
       return {
-        crane: { sprite: crane, x: Math.round(p.x - crane.baseX), y: Math.round(p.y - crane.baseY), depth: x0 + y0 + 3.13 },
+        crane: { sprite: crane, x: Math.round(p.x - crane.baseX), y: Math.round(p.y - crane.baseY), depth: x0 + y0 + n + 0.13 },
         cones,
       };
     }

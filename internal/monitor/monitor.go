@@ -73,6 +73,8 @@ type TargetStatus struct {
 	Type         string `json:"type"`
 	Building     string `json:"building"`
 	Color        string `json:"color,omitempty"`
+	// Important targets are drawn as landmarks.
+	Important bool `json:"important,omitempty"`
 	// Discovered names the discovery source (kubernetes, docker) for
 	// targets not declared in config.
 	Discovered string `json:"discovered,omitempty"`
@@ -152,6 +154,8 @@ type Monitor struct {
 	remotes map[string]*remote
 	// unscanned counts discovery sources that haven't completed a scan.
 	unscanned atomic.Int32
+	// importantMissing marks `important:` entries logged as matching nothing.
+	importantMissing map[int]bool
 }
 
 // Ready reports whether every discovery source has completed a scan, so a
@@ -161,7 +165,10 @@ func (m *Monitor) Ready() bool { return m.unscanned.Load() == 0 }
 // New builds a monitor. When demo is true, all checks are simulated and
 // discovery is off.
 func New(cfg *config.Config, demo bool) (*Monitor, error) {
-	m := &Monitor{cfg: cfg, demo: demo, entries: map[string]*entry{}, remotes: map[string]*remote{}}
+	m := &Monitor{cfg: cfg, demo: demo, entries: map[string]*entry{}, remotes: map[string]*remote{}, importantMissing: map[int]bool{}}
+	if len(cfg.Important) > 0 && (demo || !cfg.Discovery.Enabled()) && len(cfg.Agents) == 0 {
+		log.Printf("important: discovery is off, so the services it lists can't be found; ignoring %d entries (use important: true on a configured target instead)", len(cfg.Important))
+	}
 	for _, a := range cfg.Agents {
 		m.remotes[agentSource(a.Cluster)] = &remote{cluster: a.Cluster, staleAfter: a.StaleAfter.Duration}
 	}
@@ -210,6 +217,7 @@ func newEntry(t *config.Target, c Checker) *entry {
 			Type:         t.Type,
 			Building:     t.Building,
 			Color:        t.Color,
+			Important:    t.Important,
 			State:        StateUnknown,
 			TrafficUnit:  unit,
 			History:      []Sample{},

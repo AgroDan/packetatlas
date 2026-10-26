@@ -64,6 +64,9 @@ type Config struct {
 	// Targets are placed into neighborhoods automatically (see package doc).
 	// After Load, every target lives under Neighborhoods and this is empty.
 	Targets []Target `yaml:"targets"`
+	// Important names discovered services to show as landmarks; services
+	// that don't exist are logged and ignored.
+	Important []Important `yaml:"important"`
 
 	// Styles holds neighborhoods declared only to style an automatic one
 	// (no targets of their own) that no configured target fell into.
@@ -281,6 +284,9 @@ type Target struct {
 	Type     string `yaml:"type"`
 	Building string `yaml:"building"`
 	Color    string `yaml:"color"`
+	// Important shows the target as a landmark: a big, ornate building
+	// taking a whole block (see Landmarks).
+	Important bool `yaml:"important"`
 	// Neighborhood explicitly places a top-level target.
 	Neighborhood string `yaml:"neighborhood"`
 	// Outside overrides the guess made by Config.IsOutside.
@@ -356,8 +362,9 @@ const (
 )
 
 // Buildings lists the building styles. "auto" lets the UI pick one of
-// office, apartment, house, deco or modern from the target's id.
-var Buildings = []string{"auto", "office", "apartment", "house", "deco", "modern", "tower", "datacenter", "factory", "shop", "radio"}
+// office, apartment, house, deco or modern from the target's id, and
+// "landmark" one of the Landmarks.
+var Buildings = append([]string{"auto", "office", "apartment", "house", "deco", "modern", "tower", "datacenter", "factory", "shop", "radio", LandmarkRandom}, Landmarks...)
 
 var defaultBuilding = map[string]string{
 	TypeKubernetes: "auto",
@@ -481,6 +488,7 @@ func (c *Config) merge(o *Config) {
 		}
 	}
 	c.Targets = append(c.Targets, o.Targets...)
+	c.Important = append(c.Important, o.Important...)
 }
 
 // setList replaces dst when the later file sets the list at all (even to []).
@@ -633,6 +641,9 @@ func slug(s string) string {
 }
 
 func (c *Config) validate() error {
+	if err := c.validateImportant(); err != nil {
+		return err
+	}
 	if !contains(Environments, c.Map.Environment) {
 		return fmt.Errorf("map.environment: unknown environment %q (want %s)", c.Map.Environment, strings.Join(Environments, ", "))
 	}
@@ -707,6 +718,7 @@ func (c *Config) Prepare(t *Target) error {
 	if t.Traffic != nil && c.Prometheus.URL == "" {
 		return fmt.Errorf("traffic queries need prometheus.url")
 	}
+	t.settleImportant()
 	if t.Building == "" {
 		t.Building = defaultBuilding[t.Type]
 	}

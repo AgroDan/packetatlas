@@ -9,6 +9,7 @@ A network monitor whose UI is a 16-bit isometric city. Every service you monitor
 - **Inside and outside**: services outside your Docker host or cluster sit apart from the city, beyond a border that depends on the environment: a river, a mountain range, open sea, a canyon or a frozen river.
 - **Cars**: inbound cars (rx) drive in and pull into the building; outbound cars (tx) pull out and drive off. Most trips are local, and some come in from or leave toward the edge of the map ("the internet"). Busy services get queues.
 - **Kubernetes / Docker buildings** get one floor per pod / container; lit windows are ready ones. Unless you choose a building, each gets one of five styles picked from its id, so the city looks mixed and stays the same between reloads: offices, brick apartment blocks with water towers, pitched-roof houses (they turn into apartments past three floors), art-deco towers with a setback and spire, and modern blocks with solar, garden or helipad roofs.
+- **Landmarks**: mark important services, such as a firewall or a NAS, and they become big, ornate buildings that each take a whole block: a skyscraper, twin towers, a domed capitol, a neon pylon, a castle or a terraced arcology.
 - **Status**: a green, amber or red map pin, plus:
   - **degraded** → a construction site: unfinished top floors as bare steel frame, scaffolding, a tower crane with a moving hook, traffic cones and an amber flasher
   - **down** → on fire: scorched walls, flames from the roof and windows, smoke and embers, and a fire engine out front with flashing lights spraying the roof
@@ -17,7 +18,7 @@ A network monitor whose UI is a 16-bit isometric city. Every service you monitor
 **Contents**
 
 - [Quickstart](#quickstart): [standalone](#1-standalone-for-testing) · [Docker Compose](#2-docker-compose) · [Kubernetes](#3-kubernetes-namespace)
-- [Adding to the map](#adding-to-the-map): [checks](#add-a-check) · [neighborhoods](#put-it-in-a-neighborhood) · [colours](#colours) · [inside and outside](#inside-and-outside) · [environments](#environments) · [discovered services](#tune-discovered-buildings) · [where checks run](#where-checks-run) · [splitting config](#split-the-config-across-files)
+- [Adding to the map](#adding-to-the-map): [checks](#add-a-check) · [neighborhoods](#put-it-in-a-neighborhood) · [colours](#colours) · [inside and outside](#inside-and-outside) · [environments](#environments) · [discovered services](#tune-discovered-buildings) · [landmarks](#landmarks-important-services) · [where checks run](#where-checks-run) · [splitting config](#split-the-config-across-files)
 - [Reference](#reference): [config file](#config-file) · [checks](#checks) · [traffic](#traffic) · [discovery](#discovery) · [Docker access](#docker-access) · [Kubernetes access](#kubernetes-access) · [agents and a hub](#multiple-clusters-agents-and-a-hub) · [Helm chart](#helm-chart) ([all values](docs/helm.md)) · [command line and UI](#command-line-and-ui)
 - [Troubleshooting](#troubleshooting) · [Development](#development)
 
@@ -228,7 +229,8 @@ Every target can also take these options:
 |---|---|---|
 | `neighborhood` | automatic | which neighborhood it goes in (see below) |
 | `outside` | guessed from the host | `true` / `false`: whether it's outside the Docker host or cluster (see [Inside and outside](#inside-and-outside)) |
-| `building` | per check type | `auto`, `office`, `apartment`, `house`, `deco`, `modern`, `tower`, `datacenter`, `factory`, `shop`, `radio` |
+| `building` | per check type | `auto`, `office`, `apartment`, `house`, `deco`, `modern`, `tower`, `datacenter`, `factory`, `shop`, `radio`, or a [landmark](#landmarks-important-services) |
+| `important` | `false` | `true` shows it as a [landmark](#landmarks-important-services) |
 | `color` | | building colour: a name such as `pink`, `darkblue` or `lightpurple`, or hex such as `"#c44f4f"` (see [Colours](#colours)) |
 | `interval` | `defaults.interval` (15s) | how often to check |
 | `timeout` | `defaults.timeout` (3s) | how long a check may take |
@@ -394,6 +396,7 @@ To change any of that, put these keys in Docker labels on a compose service, or 
 | `packetatlas.io/building` | any [building](#add-a-check) |
 | `packetatlas.io/neighborhood` | place it in a named neighborhood instead |
 | `packetatlas.io/color` | building colour: a [name or hex](#colours) |
+| `packetatlas.io/important: "true"` | show it as a [landmark](#landmarks-important-services) |
 
 ```yaml
 # docker-compose.yml
@@ -417,6 +420,60 @@ kubectl -n shop annotate deploy/orders packetatlas.io/name="Orders API" packetat
 Changes apply on the next discovery scan (30s by default). Compose labels apply when the container is recreated (`docker compose up -d`).
 
 To tune a discovered building beyond what labels can do, declare a target for the same workload: the same compose project and service, or the same namespace and deployment/statefulset/daemonset. Your declaration replaces the discovered one.
+
+### Landmarks: important services
+
+Mark the services that matter most, such as the firewall, the NAS or the ingress, as important, and each becomes a landmark: a big, ornate building that takes a whole city block and towers over the rest. Landmarks still show status like any building: they light up when healthy, get scaffolding and a crane when degraded, catch fire when down, and grey out when unknown.
+
+| Landmark | Looks like |
+|---|---|
+| `skyscraper` | a supertall glass tower in four setbacks, with a glowing crown and a spire |
+| `twins` | two glass towers joined by a sky bridge |
+| `capitol` | a colonnaded marble hall with a portico, a dome and a flag |
+| `pylon` | a tapering neon-laced obelisk, ringed by halos, with an orb hovering over it |
+| `fortress` | a castle: curtain walls and a gatehouse, corner towers, and a keep flying a banner |
+| `arcology` | a stepped megastructure of glass terraces and roof gardens, with a greenhouse dome |
+
+The landmark is picked at random from the service's id, so it stays the same between reloads, unless you name one. Its colours (the capitol's dome, the castle's roofs and banner, the pylon's stone) follow the building or neighborhood [colour](#colours).
+
+**A configured check:** set `important: true`, or choose a landmark as its `building`, which makes it important too:
+
+```yaml
+neighborhoods:
+  - name: Infrastructure
+    targets:
+      - name: Firewall
+        building: fortress          # a chosen landmark
+        ping: { host: 10.10.90.1 }
+      - name: Main NAS
+        important: true             # a random landmark
+        http: { url: https://nas.example.lan }
+```
+
+An important check with an ordinary building, such as `building: house`, gets a random landmark instead, and a warning is logged.
+
+**A discovered service:** list it under a top-level `important:`, by name. Each entry is either just the name, or a mapping that also narrows it to one neighborhood or picks the landmark:
+
+```yaml
+important:
+  - traefik                         # any discovered service named traefik
+  - synology-csi/synology-csi-node  # "<neighborhood>/<name>"
+  - name: jellyfin
+    neighborhood: media             # only the one in "media"
+    building: capitol               # optional: which landmark
+```
+
+- **Matching:** names are matched against the building's name on the map, ignoring case: the workload or compose service name, or its `packetatlas.io/name`. Agent-reported services on a hub match too, by their prefixed neighborhood (`prod/traefik/traefik`).
+- **Only discovered services:** an entry only applies to a service that discovery actually found. A name that matches nothing, including a service you declared as a check yourself, is ignored, and the log says so once every discovery source has finished its first scan:
+
+  ```
+  important "nothere": no discovered service has that name; ignoring it until one does
+  ```
+
+  If the service turns up later, it becomes a landmark and that's logged too. With discovery turned off (and no agents pushing to this hub), the whole list is ignored with one warning at startup.
+- **Labels and annotations:** instead of listing it, you can also put `packetatlas.io/important: "true"`, or a landmark in `packetatlas.io/building`, on the service itself.
+
+**On the map:** landmarks are placed first in their neighborhood, one per block, so a neighborhood with landmarks grows by a block for each. The side panel marks them with a "landmark" tag.
 
 ### Where checks run
 
@@ -482,6 +539,7 @@ agents: [ ... ]             # hub side, see Multiple clusters
 agent: { ... }              # agent side, see Multiple clusters
 neighborhoods: [ ... ]      # see Put it in a neighborhood
 targets: [ ... ]            # see Add a check
+important: [ ... ]          # discovered services to show as landmarks; see Landmarks
 ```
 
 ### Checks
@@ -768,7 +826,7 @@ web/static/           embedded UI (plain ES modules, no build step)
   js/pixel.js         pixel buffer + isometric box rasteriser
   js/city.js          organic block layout, borders, roads, water, BFS paths, ground rendering
   js/environments.js  the map environments: borders, scenery, trees, palettes
-  js/sprites.js       procedural buildings, cars, trees, mountains and mesas, pins
+  js/sprites.js       procedural buildings and landmarks, cars, trees, mountains and mesas, pins
   js/traffic.js       car spawning, lane following, queueing
   js/renderer.js      camera, depth-sorted drawing, pins/labels, effects, minimap
   js/ui.js            search, info panel, summary chips, tooltip

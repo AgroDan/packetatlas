@@ -24,6 +24,7 @@ const (
 	annBuilding     = "packetatlas.io/building"
 	annNeighborhood = "packetatlas.io/neighborhood"
 	annColor        = "packetatlas.io/color"
+	annImportant    = "packetatlas.io/important" // "true": show as a landmark
 )
 
 // discoverer lists the targets a source currently offers. Targets come back
@@ -103,6 +104,9 @@ func (m *Monitor) prepare(source string, list []*config.Target, warned map[strin
 		kind := config.KindCustom
 		if t.Neighborhood == "" {
 			t.Neighborhood, kind = t.AutoNeighborhood()
+		}
+		if i := m.cfg.MatchImportant(t.Neighborhood, t.Name); i >= 0 {
+			m.cfg.MakeImportant(t, i)
 		}
 		if err := m.cfg.Prepare(t); err != nil {
 			key := workloadKey(t) + err.Error()
@@ -212,6 +216,7 @@ func (m *Monitor) sync(source string, list []found) {
 			// Same workload, new settings (e.g. an edited annotation).
 			e.status, e.upCount = p.status, p.upCount
 			e.status.Name, e.status.Building, e.status.Color = f.target.Name, f.target.Building, f.target.Color
+			e.status.Important = f.target.Important
 		} else {
 			log.Printf("discovery %s: + %s", source, id)
 		}
@@ -223,6 +228,37 @@ func (m *Monitor) sync(source string, list []found) {
 	}
 	if changed {
 		m.relayout()
+	}
+	m.checkImportant()
+}
+
+// checkImportant logs each `important:` entry that names no discovered or
+// agent-reported service, once every discovery source has scanned and every
+// agent has pushed, and logs again if one turns up later. Callers hold m.mu.
+func (m *Monitor) checkImportant() {
+	if len(m.cfg.Important) == 0 || m.unscanned.Load() > 0 {
+		return
+	}
+	for _, r := range m.remotes {
+		if r.last.IsZero() {
+			return
+		}
+	}
+	for i, imp := range m.cfg.Important {
+		found := false
+		for _, e := range m.entries {
+			if e.source != "" && imp.Matches(e.target.Neighborhood, e.target.Name) {
+				found = true
+				break
+			}
+		}
+		switch {
+		case !found && !m.importantMissing[i]:
+			log.Printf("important %s: no discovered service has that name; ignoring it until one does", imp)
+		case found && m.importantMissing[i]:
+			log.Printf("important %s: found; showing it as a landmark", imp)
+		}
+		m.importantMissing[i] = !found
 	}
 }
 
@@ -317,7 +353,8 @@ func applyHints(t *config.Target, meta map[string]string, fallback string, image
 	t.Neighborhood = meta[annNeighborhood]
 	t.Color = meta[annColor]
 	t.Building = meta[annBuilding]
-	if t.Building == "" {
+	t.Important = meta[annImportant] == "true"
+	if t.Building == "" && !t.Important {
 		t.Building = guessBuilding(fallback, t.Name, images)
 	}
 }

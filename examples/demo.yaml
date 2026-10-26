@@ -43,6 +43,12 @@ docker:
 # prometheus:
 #   url: http://prometheus.monitoring:9090
 
+# Discovered services to show as landmarks, by name. Names that discovery
+# doesn't find are logged and ignored.
+# important:
+#   - traefik
+#   - { name: postgres, neighborhood: prod, building: skyscraper }
+
 # Explicit neighborhoods. An entry with no targets just styles an automatic
 # neighborhood of the same name (here: the "prod" namespace).
 neighborhoods:
@@ -53,6 +59,7 @@ neighborhoods:
     color: "#d08a3a"
     targets:
       - name: Public website
+        important: true                 # a landmark: a big building taking a whole block
         http:
           url: https://example.com
           expect_status: [200]
@@ -70,6 +77,7 @@ neighborhoods:
     color: "#4fa36b"
     targets:
       - name: Router
+        building: fortress              # a chosen landmark (see README: Landmarks)
         ping:
           host: 192.168.1.1
       - name: NAS

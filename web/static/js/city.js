@@ -4,6 +4,7 @@
 
 import { PixBuf, rasterBox, hexToRgb, mix, shade, hash2, rng, strHash, AX } from './pixel.js';
 import { environment, ENVIRONMENTS, DEFAULT_ENVIRONMENT, TREE } from './environments.js';
+import { isLandmark } from './sprites.js';
 
 export const BLOCK = 8; // road every BLOCK tiles; 7x7 block interior
 const MARGIN = 5; // grass ring around the city
@@ -87,7 +88,8 @@ export class City {
       color: d.color || PALETTE[i % PALETTE.length],
       kind: d.kind,
       outside: !!d.outside,
-      targets: targets.filter((t) => t.neighborhood === d.name),
+      // Landmarks first: each takes a whole block, ahead of the lots.
+      targets: targets.filter((t) => t.neighborhood === d.name).sort((a, b) => isLandmark(b) - isLandmark(a)),
     }));
     // With services both inside and outside the Docker host or cluster, the
     // outside neighborhoods sit beyond a border (see environments.js): a
@@ -117,7 +119,8 @@ export class City {
       const items = []; // { nb: blocks wanted, members: [neighborhood] }
       let shared = [];
       for (const d of hoods) {
-        const n = Math.max(1, d.targets.length);
+        // A landmark counts as a block's four lots.
+        const n = Math.max(1, d.targets.length + 3 * d.targets.filter(isLandmark).length);
         if (n >= SHARE_BELOW) {
           items.push({ nb: Math.ceil(n / 4), members: [d] });
           continue;
@@ -757,8 +760,30 @@ export class City {
   placeBuildings() {
     this.buildings = [];
     this.neighborhoods.forEach((d, di) => {
+      // Landmarks come first, one per block (lots 4i..4i+3 are block i's);
+      // the other buildings take the lots after them.
+      const marks = d.targets.filter(isLandmark).length;
       d.targets.forEach((t, n) => {
-        const [qx, qy] = d.lots[n];
+        if (n < marks) {
+          const [qx, qy] = d.lots[n * 4];
+          const ox = MARGIN + (qx >> 1) * BLOCK, oy = MARGIN + (qy >> 1) * BLOCK;
+          // The whole block interior, plaza lines included, is its lot.
+          for (let j = 1; j < BLOCK; j++) for (let i = 1; i < BLOCK; i++) this.tiles[this.idx(ox + i, oy + j)] = T.LOT;
+          this.buildings.push({
+            id: t.id,
+            target: t,
+            neighborhood: di,
+            color: t.color || d.color,
+            lot: [ox + 1, oy + 1],
+            size: BLOCK - 1,
+            center: [ox + BLOCK / 2 + 0.5, oy + BLOCK / 2 + 0.5],
+            drive: [ox + BLOCK / 2, oy + BLOCK],
+            door: [ox + BLOCK / 2 + 0.5, oy + BLOCK - 0.4],
+            landmark: true,
+          });
+          return;
+        }
+        const [qx, qy] = d.lots[n + 3 * marks];
         const bx = qx >> 1, by = qy >> 1;
         const col = qx % 2, row = qy % 2;
         const ox = MARGIN + bx * BLOCK, oy = MARGIN + by * BLOCK;
@@ -786,6 +811,7 @@ export class City {
           neighborhood: di,
           color: t.color || d.color,
           lot: [x0, y0],
+          size: LOT,
           center: [x0 + LOT / 2, y0 + LOT / 2],
           drive,
           door,
@@ -1071,7 +1097,7 @@ export class City {
 
   /** Signature used to decide when the layout must be rebuilt. */
   static signature(neighborhoods, targets, envName) {
-    return JSON.stringify([envName, neighborhoods.map((d) => [d.name, d.color, d.kind, !!d.outside]), targets.map((t) => [t.id, t.neighborhood, t.building, t.color])]);
+    return JSON.stringify([envName, neighborhoods.map((d) => [d.name, d.color, d.kind, !!d.outside]), targets.map((t) => [t.id, t.neighborhood, t.building, t.color, isLandmark(t)])]);
   }
 }
 

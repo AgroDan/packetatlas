@@ -56,7 +56,7 @@ targets:
 		deployment("prod", "idle", 0, nil, "idle:1"), // scaled to zero
 		deployment("prod", "hidden", 1, map[string]string{annIgnore: "true"}, "x"),
 		deployment("prod", "checkout", 1, map[string]string{
-			annName: "Checkout", annNeighborhood: "Payments", annBuilding: "tower",
+			annName: "Checkout", annNeighborhood: "Payments", annBuilding: "tower", annColor: "dark green",
 		}, "checkout:1"),
 		deployment("shop", "cart", 1, nil, "cart:1"),
 		deployment("kube-system", "coredns", 2, nil, "coredns"), // excluded by default
@@ -94,6 +94,9 @@ targets:
 	var got []string
 	for _, s := range targets {
 		got = append(got, s.ID+":"+s.Building+":"+s.Discovered)
+		if s.ID == "payments/checkout" && s.Color != "#006400" {
+			t.Errorf("colour annotation = %q, want #006400", s.Color)
+		}
 	}
 	want := []string{
 		"prod/api:auto:",                     // configured target first

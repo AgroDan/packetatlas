@@ -66,6 +66,9 @@ func (m *Monitor) Ingest(cluster, prefix string, hoods []Neighborhood, targets [
 			m.entries[id] = e
 			changed = true
 		}
+		// Agents send hex, but an older agent may pass through a colour name.
+		t.Color = config.ColorOrDefault(fmt.Sprintf("cluster %q target %q", cluster, t.Name), t.Color)
+		h.Color = config.ColorOrDefault(fmt.Sprintf("cluster %q neighborhood %q", cluster, t.Neighborhood), h.Color)
 		tg := e.target
 		if tg.Name != t.Name || tg.Neighborhood != hood || tg.Building != t.Building ||
 			tg.Color != t.Color || e.autoKind != h.Kind || e.autoColor != h.Color || e.outside != h.Outside {

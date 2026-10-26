@@ -664,6 +664,11 @@ func (c *Config) validate() error {
 	if len(c.Neighborhoods) == 0 && !c.Discovery.Enabled() && len(c.Agents) == 0 {
 		return fmt.Errorf("config defines no targets: add some, opt in to discovery.kubernetes / discovery.docker, or list agents")
 	}
+	for _, list := range [][]Neighborhood{c.Neighborhoods, c.Styles} {
+		for i := range list {
+			list[i].Color = ColorOrDefault(fmt.Sprintf("neighborhood %q", list[i].Name), list[i].Color)
+		}
+	}
 	seen := map[string]bool{}
 	for ni := range c.Neighborhoods {
 		n := &c.Neighborhoods[ni]
@@ -698,6 +703,7 @@ func (c *Config) Prepare(t *Target) error {
 	if err := t.validateCheck(); err != nil {
 		return err
 	}
+	t.Color = ColorOrDefault(fmt.Sprintf("neighborhood %q target %q", t.Neighborhood, t.Name), t.Color)
 	if t.Traffic != nil && c.Prometheus.URL == "" {
 		return fmt.Errorf("traffic queries need prometheus.url")
 	}

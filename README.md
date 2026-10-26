@@ -17,7 +17,7 @@ A network monitor whose UI is a 16-bit isometric city. Every service you monitor
 **Contents**
 
 - [Quickstart](#quickstart): [standalone](#1-standalone-for-testing) · [Docker Compose](#2-docker-compose) · [Kubernetes](#3-kubernetes-namespace)
-- [Adding to the map](#adding-to-the-map): [checks](#add-a-check) · [neighborhoods](#put-it-in-a-neighborhood) · [inside and outside](#inside-and-outside) · [environments](#environments) · [discovered services](#tune-discovered-buildings) · [where checks run](#where-checks-run) · [splitting config](#split-the-config-across-files)
+- [Adding to the map](#adding-to-the-map): [checks](#add-a-check) · [neighborhoods](#put-it-in-a-neighborhood) · [colours](#colours) · [inside and outside](#inside-and-outside) · [environments](#environments) · [discovered services](#tune-discovered-buildings) · [where checks run](#where-checks-run) · [splitting config](#split-the-config-across-files)
 - [Reference](#reference): [config file](#config-file) · [checks](#checks) · [traffic](#traffic) · [discovery](#discovery) · [Docker access](#docker-access) · [Kubernetes access](#kubernetes-access) · [agents and a hub](#multiple-clusters-agents-and-a-hub) · [Helm chart](#helm-chart) ([all values](docs/helm.md)) · [command line and UI](#command-line-and-ui)
 - [Troubleshooting](#troubleshooting) · [Development](#development)
 
@@ -229,7 +229,7 @@ Every target can also take these options:
 | `neighborhood` | automatic | which neighborhood it goes in (see below) |
 | `outside` | guessed from the host | `true` / `false`: whether it's outside the Docker host or cluster (see [Inside and outside](#inside-and-outside)) |
 | `building` | per check type | `auto`, `office`, `apartment`, `house`, `deco`, `modern`, `tower`, `datacenter`, `factory`, `shop`, `radio` |
-| `color` | | building colour, e.g. `"#c44f4f"` |
+| `color` | | building colour: a name such as `pink`, `darkblue` or `lightpurple`, or hex such as `"#c44f4f"` (see [Colours](#colours)) |
 | `interval` | `defaults.interval` (15s) | how often to check |
 | `timeout` | `defaults.timeout` (3s) | how long a check may take |
 | `degraded_latency` | off | turn an up check amber when it is slower than this |
@@ -252,7 +252,7 @@ There are three simple ways to put things together. They all give the same resul
 # a) Nest targets under the neighborhood.
 neighborhoods:
   - name: Home Lab
-    color: "#6aa84f"                  # optional
+    color: green                      # optional: a name or "#6aa84f"
     targets:
       - name: NAS
         tcp: { address: 192.168.1.10:445 }
@@ -280,7 +280,7 @@ An entry under `neighborhoods:` with no targets only styles an automatic neighbo
 ```yaml
 neighborhoods:
   - name: shop          # the "shop" namespace or compose project
-    color: "#4f7cc4"
+    color: steelblue
 ```
 
 How the city is laid out:
@@ -293,6 +293,22 @@ How the city is laid out:
 - **Shared names:** a namespace and a compose project with the same name become one neighborhood.
 - **Across the border:** neighborhoods outside the Docker host or cluster sit on the far side of a river, mountain range, sea or canyon (see [Inside and outside](#inside-and-outside)).
 - **Unique names:** target names must be unique within a neighborhood.
+
+#### Colours
+
+Neighborhoods and buildings take a `color` in any of these forms:
+
+- **A colour name:** any of the [CSS colour names](https://developer.mozilla.org/en-US/docs/Web/CSS/named-color), such as `pink`, `darkblue`, `gray`, `teal`, `orange`, `slategray` or `rebeccapurple`.
+- **`light` or `dark` plus a name**, for shades CSS doesn't name, such as `lightpurple`, `darkpink` or `lightorange`. CSS's own names win where they exist: `lightblue` is CSS's light blue.
+- **Hex:** `"#4f7cc4"` or the short `"#47c"`. Quote it, because an unquoted `#` starts a YAML comment. Hex also works without the `#`.
+
+Names ignore case, spaces, dashes and underscores, so `Light Purple`, `light-purple` and `lightpurple` are the same colour. An unknown colour never hides anything. The neighborhood or building is drawn in its default colour instead: the next colour in the map's palette for a neighborhood, or its neighborhood's colour for a building. A warning naming the item and the colour is logged, once per bad value:
+
+```
+neighborhood "Media": unknown colour "blurple": use a name such as "pink", "darkblue" or "lightpurple", or hex such as "#4f7cc4"; using the default colour
+```
+
+In Kubernetes, see it with `kubectl -n packetatlas logs deploy/packetatlas`; in Docker Compose, with `docker compose logs packetatlas`.
 
 ### Inside and outside
 
@@ -377,7 +393,7 @@ To change any of that, put these keys in Docker labels on a compose service, or 
 | `packetatlas.io/name` | building label |
 | `packetatlas.io/building` | any [building](#add-a-check) |
 | `packetatlas.io/neighborhood` | place it in a named neighborhood instead |
-| `packetatlas.io/color` | building colour |
+| `packetatlas.io/color` | building colour: a [name or hex](#colours) |
 
 ```yaml
 # docker-compose.yml

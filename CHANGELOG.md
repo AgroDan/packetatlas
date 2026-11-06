@@ -6,6 +6,8 @@ All notable changes to PacketAtlas are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-06
+
 ### Added
 
 - **Abandoned services.** Mark a service that's off on purpose with
@@ -82,7 +84,8 @@ The first release.
 - A container image on GHCR for linux/amd64 and linux/arm64, running as
   numeric UID 65532, and a Helm chart.
 
-[Unreleased]: https://github.com/AgroDan/packetatlas/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/AgroDan/packetatlas/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/AgroDan/packetatlas/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/AgroDan/packetatlas/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/AgroDan/packetatlas/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/AgroDan/packetatlas/compare/v0.1.0...v0.2.0

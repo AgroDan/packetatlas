@@ -287,6 +287,9 @@ type Target struct {
 	// Important shows the target as a landmark: a big, ornate building
 	// taking a whole block (see Landmarks).
 	Important bool `yaml:"important"`
+	// Abandoned says the service is off on purpose: while its check fails it
+	// is shown boarded up instead of on fire.
+	Abandoned bool `yaml:"abandoned"`
 	// Neighborhood explicitly places a top-level target.
 	Neighborhood string `yaml:"neighborhood"`
 	// Outside overrides the guess made by Config.IsOutside.

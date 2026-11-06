@@ -146,3 +146,6 @@ targets:
   # No namespace, project or neighborhood → "Outskirts".
   - name: Backup server
     tcp: { address: 192.168.1.20:22 }
+  - name: Old file server
+    abandoned: true                     # off on purpose: boarded up, not on fire, while down
+    tcp: { address: 192.168.1.21:445 }

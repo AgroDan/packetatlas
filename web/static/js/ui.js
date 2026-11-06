@@ -137,7 +137,7 @@ export class UI {
       <h2>${esc(t.name)}</h2>
       <div class="sub">
         <span class="swatch" style="background:${esc(color)}"></span>${esc(t.neighborhood)}${kind ? ` <span class="kind">${kind}</span>` : ''}${neighborhood?.outside ? ' <span class="kind" title="Checks something outside the Docker host or cluster, so it sits across the river">outside</span>' : ''}
-        ·${TYPE_LABEL[t.type] || esc(t.type)} · ${esc(this.r.city?.byId.get(t.id)?.spec?.kind || t.building)}${isLandmark(t) ? ' <span class="kind" title="An important service, shown as a landmark that takes a whole block">landmark</span>' : ''}${t.discovered ? ' <span class="kind" title="Found by discovery, not declared in config">discovered</span>' : ''}${t.cluster ? ` <span class="kind" title="Reported by this cluster's agent">cluster ${esc(t.cluster)}</span>` : ''}
+        ·${TYPE_LABEL[t.type] || esc(t.type)} · ${esc(this.r.city?.byId.get(t.id)?.spec?.kind || t.building)}${isLandmark(t) ? ' <span class="kind" title="An important service, shown as a landmark that takes a whole block">landmark</span>' : ''}${t.discovered ? ' <span class="kind" title="Found by discovery, not declared in config">discovered</span>' : ''}${t.cluster ? ` <span class="kind" title="Reported by this cluster's agent">cluster ${esc(t.cluster)}</span>` : ''}${t.abandoned ? ' <span class="kind" title="Marked as off on purpose: shown boarded up rather than on fire while it is down">abandoned</span>' : ''}
       </div>
       <div class="state-row">
         <span class="pill" style="--c:${STATE_COLORS[t.state] || STATE_COLORS.unknown}">${esc(t.state)}</span>
@@ -280,11 +280,11 @@ export class UI {
   // --- summary & tooltip --------------------------------------------------
 
   renderSummary() {
-    const counts = { up: 0, degraded: 0, down: 0, unknown: 0 };
+    const counts = { up: 0, degraded: 0, down: 0, abandoned: 0, unknown: 0 };
     for (const t of this.snap.targets) counts[t.state] = (counts[t.state] || 0) + 1;
     const totalTraffic = this.snap.targets.reduce((s, t) => s + (t.trafficUnit === 'B/s' ? t.rxRate + t.txRate : 0), 0);
     this.summary.innerHTML =
-      ['up', 'degraded', 'down', 'unknown']
+      ['up', 'degraded', 'down', 'abandoned', 'unknown']
         .filter((s) => counts[s] || s === 'up')
         .map((s) => `<button class="chip" data-state="${s}" title="Jump to ${s} services"><span class="dot" style="background:${STATE_COLORS[s]}"></span>${counts[s]} ${s}</button>`)
         .join('') + `<span class="chip static">⇅ ${fmtRate(totalTraffic)}</span>`;

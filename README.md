@@ -2,7 +2,7 @@
 
 <p align="center"><img src="docs/images/demo.gif" alt="PacketAtlas: an isometric pixel-art city where each monitored service is a building, with cars driving through its streets in proportion to traffic" width="640"></p>
 
-A network monitor whose UI is a 16-bit isometric city. Every service you watch is a building, and the streets around it fill with cars in proportion to its traffic. A healthy building has lit windows, a degraded one turns into a construction site, and one that's down catches fire, with a fire engine on the way.
+A network monitor whose UI is a 16-bit isometric city. Every service you watch is a building, and the streets around it fill with cars in proportion to its traffic. A healthy building has lit windows, a degraded one turns into a construction site, and one that's down catches fire, with a fire engine on the way. A service you've switched off on purpose can be marked `abandoned: true` (or annotated `packetatlas.io/abandoned: "true"`), and while it's down it stands boarded up behind a broken fence instead.
 
 - **Checks:** HTTP, TCP, ping, Docker containers and Kubernetes workloads, or discover your compose projects and namespaces automatically.
 - **Neighborhoods:** group services into parts of the city. Anything outside your Docker host or cluster sits across a river, mountain range, sea or canyon.

@@ -22,6 +22,8 @@ const (
 	StateUp       State = "up"
 	StateDegraded State = "degraded"
 	StateDown     State = "down"
+	// StateAbandoned is a down target marked `abandoned`: off on purpose.
+	StateAbandoned State = "abandoned"
 )
 
 // Result is what a single check produces.
@@ -75,6 +77,9 @@ type TargetStatus struct {
 	Color        string `json:"color,omitempty"`
 	// Important targets are drawn as landmarks.
 	Important bool `json:"important,omitempty"`
+	// Abandoned targets are off on purpose; when down, their state is
+	// StateAbandoned rather than StateDown.
+	Abandoned bool `json:"abandoned,omitempty"`
 	// Discovered names the discovery source (kubernetes, docker) for
 	// targets not declared in config.
 	Discovered string `json:"discovered,omitempty"`
@@ -218,6 +223,7 @@ func newEntry(t *config.Target, c Checker) *entry {
 			Building:     t.Building,
 			Color:        t.Color,
 			Important:    t.Important,
+			Abandoned:    t.Abandoned,
 			State:        StateUnknown,
 			TrafficUnit:  unit,
 			History:      []Sample{},
@@ -355,6 +361,10 @@ func (m *Monitor) runCheck(ctx context.Context, e *entry) {
 		}
 	}
 
+	if t.Abandoned && res.State == StateDown {
+		res.State = StateAbandoned
+	}
+
 	if t.Traffic != nil && m.prom != nil {
 		rx, tx, err := m.prom.traffic(cctx, t.Traffic)
 		if err != nil {
@@ -406,7 +416,7 @@ func (m *Monitor) record(e *entry, res Result) {
 const ambientIntensity = 0.08
 
 func (m *Monitor) intensity(t *config.Target, res Result) float64 {
-	if res.State == StateDown || res.State == StateUnknown {
+	if res.State == StateDown || res.State == StateAbandoned || res.State == StateUnknown {
 		return 0
 	}
 	if !res.HasTraffic {

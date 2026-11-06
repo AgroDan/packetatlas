@@ -25,6 +25,7 @@ const (
 	annNeighborhood = "packetatlas.io/neighborhood"
 	annColor        = "packetatlas.io/color"
 	annImportant    = "packetatlas.io/important" // "true": show as a landmark
+	annAbandoned    = "packetatlas.io/abandoned" // "true": off on purpose; boarded up, not on fire, when down
 )
 
 // discoverer lists the targets a source currently offers. Targets come back
@@ -216,7 +217,7 @@ func (m *Monitor) sync(source string, list []found) {
 			// Same workload, new settings (e.g. an edited annotation).
 			e.status, e.upCount = p.status, p.upCount
 			e.status.Name, e.status.Building, e.status.Color = f.target.Name, f.target.Building, f.target.Color
-			e.status.Important = f.target.Important
+			e.status.Important, e.status.Abandoned = f.target.Important, f.target.Abandoned
 		} else {
 			log.Printf("discovery %s: + %s", source, id)
 		}
@@ -354,6 +355,7 @@ func applyHints(t *config.Target, meta map[string]string, fallback string, image
 	t.Color = meta[annColor]
 	t.Building = meta[annBuilding]
 	t.Important = meta[annImportant] == "true"
+	t.Abandoned = meta[annAbandoned] == "true"
 	if t.Building == "" && !t.Important {
 		t.Building = guessBuilding(fallback, t.Name, images)
 	}
@@ -413,7 +415,9 @@ func (k *kubeDiscoverer) discover(ctx context.Context) ([]*config.Target, error)
 		case !included(nil, k.cfg.ExcludeNamespaces, w.namespace),
 			a[annIgnore] == "true",
 			k.cfg.RequireAnnotation && a[annDiscover] != "true",
-			w.desired == 0: // scaled to zero on purpose, or a daemonset with no nodes
+			// Scaled to zero on purpose, or a daemonset with no nodes; unless
+			// it's marked abandoned, which is how it should then be shown.
+			w.desired == 0 && a[annAbandoned] != "true":
 			continue
 		}
 		kt := &config.KubeTarget{Namespace: w.namespace}
@@ -520,7 +524,9 @@ func (d *dockerDiscoverer) discover(ctx context.Context) ([]*config.Target, erro
 	for _, key := range keys {
 		s := byKey[key]
 		l := s.labels
-		if !s.live || l[annIgnore] == "true" || (d.cfg.RequireLabel && l[annDiscover] != "true") {
+		// Stopped services whose containers all exited cleanly look like
+		// finished jobs, but one marked abandoned was switched off: keep it.
+		if (!s.live && l[annAbandoned] != "true") || l[annIgnore] == "true" || (d.cfg.RequireLabel && l[annDiscover] != "true") {
 			continue
 		}
 		t := &config.Target{Name: s.name, Docker: &config.DockerTarget{Project: s.project, Service: s.name}}

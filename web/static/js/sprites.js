@@ -33,6 +33,11 @@ const SOOT = hexToRgb('#2e2622');
 const FIRE = hexToRgb('#ff8a1e');
 const FIRE_HI = hexToRgb('#ffd45a');
 const CHAR = hexToRgb('#140f0d');
+// Abandoned.
+const PLY = hexToRgb('#a88653'); // weathered plywood over the windows
+const RUST = hexToRgb('#8a4b2a');
+const GRIME = hexToRgb('#5b5548');
+const IVY = hexToRgb('#4c6a33');
 
 /**
  * Per-kind geometry. a/b are footprint sizes in tiles; buildings with floors
@@ -114,11 +119,13 @@ function drawBuilding(spec, colorHex, seed) {
   const ox = by, oy = pad;
 
   const burning = spec.state === 'down';
+  const abandoned = spec.state === 'abandoned';
   const underConstruction = spec.state === 'degraded';
   let base = hexToRgb(colorHex);
   if (spec.state === 'unknown') base = mix(base, [110, 110, 115], 0.45);
   if (burning) base = mix(base, SOOT, 0.55); // scorched
-  const wall = mix(base, CONCRETE, burning ? 0.15 : 0.4);
+  if (abandoned) base = mix(base, GRIME, 0.5); // faded and filthy
+  const wall = mix(base, CONCRETE, burning ? 0.15 : abandoned ? 0.25 : 0.4);
 
   // Under construction: the top floors are still a bare steel frame, and the
   // builder only draws the finished floors beneath it.
@@ -130,10 +137,11 @@ function drawBuilding(spec, colorHex, seed) {
 
   const ctx = {
     buf, ox, oy: oy + frameH, ax, by, h: h - frameH, k, spec: bodySpec, seed, base, wall,
-    dead: burning || spec.state === 'unknown', burning, unfinished: frameH > 0,
+    dead: burning || abandoned || spec.state === 'unknown', burning, abandoned, unfinished: frameH > 0,
   };
   const meta = { beacon: null, smoke: null, fire: null };
   BUILDERS[spec.kind](ctx, meta);
+  if (abandoned) weather(ctx);
   if (frameH) {
     steelFrame(ctx, oy, frameH, k.floorH);
     meta.beacon = { x: ox, y: oy - 3 };
@@ -209,6 +217,88 @@ function fireEmitters(c) {
   return pts;
 }
 
+/**
+ * Window on an abandoned building: boarded over, smashed, or caked in dust.
+ * Nobody boards up windows out of reach, so `high` ones are only broken.
+ */
+function boardWindow(i, j, topRow, seed, high = false) {
+  const r = hash2(i, j, seed + 131);
+  if (!high && r < 0.55) return topRow ? shade(PLY, -0.3) : hash2(i, j, seed + 7) < 0.5 ? PLY : shade(PLY, -0.12);
+  if (r < (high ? 0.4 : 0.8)) return CHAR;
+  return topRow ? mix(SHEEN, GRIME, 0.6) : mix(GLASS, GRIME, 0.45);
+}
+
+/** A doorway (du, dr within w x h) boarded over, with an X of battens across it. */
+function boardedDoor(du, dr, w, h) {
+  const d = Math.round((du * (h - 1)) / Math.max(1, w - 1));
+  return dr === d || dr === h - 1 - d ? shade(WOOD, -0.15) : PLY;
+}
+
+/** Rusted version of a metal colour on an abandoned building. */
+function rusty(c, color) {
+  return c.abandoned ? mix(color, RUST, 0.55) : color;
+}
+
+/** A mast snapped partway up, its top hanging off to one side. */
+function brokenMast(c, meta, x, y, len, color = STEEL) {
+  const stub = Math.max(3, Math.round(len * 0.45));
+  const col = mix(color, RUST, 0.5);
+  for (let i = 1; i <= stub; i++) c.buf.set(x, y - i, shade(col, -0.25));
+  for (let j = 1; j <= Math.round(len * 0.4); j++) c.buf.set(x + j, y - stub + Math.round(j * 0.7), shade(col, -0.05));
+  meta.beacon = { x, y: y - stub - 1 };
+}
+
+/**
+ * Years of neglect over the finished sprite: grime streaking down from the
+ * ledges, cracks, and ivy climbing the walls from the ground.
+ */
+function weather(c) {
+  const { buf, seed } = c;
+  const { w, h, data } = buf;
+  const at = (x, y) => (y * w + x) * 4;
+  const tint = (x, y, col, t) => {
+    const i = at(x, y);
+    if (data[i + 3]) buf.set(x, y, mix([data[i], data[i + 1], data[i + 2]], col, t));
+  };
+  const span = [];
+  for (let x = 0; x < w; x++) {
+    let top = -1, bottom = -1;
+    for (let y = 0; y < h; y++) {
+      if (!data[at(x, y) + 3]) continue;
+      if (top < 0) top = y;
+      bottom = y;
+    }
+    span.push([top, bottom]);
+    if (top < 0) continue;
+    if (hash2(x, 1, seed + 3) < 0.22) {
+      const start = top + Math.floor(hash2(x, 2, seed) * (bottom - top) * 0.6);
+      const len = 6 + Math.floor(hash2(x, 3, seed) * 26);
+      for (let y = start; y < Math.min(bottom, start + len); y++) tint(x, y, GRIME, 0.4 * (1 - (y - start) / len));
+    }
+    // Ivy in clumps a few pixels wide, taller near the middle of a clump.
+    const clump = hash2(x >> 2, 4, seed);
+    if (clump < 0.5) {
+      const ivyH = Math.floor(clump * 24 + hash2(x, 5, seed) * 5);
+      for (let y = bottom; y > bottom - ivyH && y >= top; y--) {
+        if (data[at(x, y) + 3] && hash2(x, y, seed + 9) < 0.7) buf.set(x, y, hash2(x, y, seed + 10) < 0.35 ? shade(IVY, 0.18) : IVY);
+      }
+    }
+  }
+  const r = rng(seed + 21);
+  for (let k = 0; k < 2 + Math.floor(w / 20); k++) {
+    let x = Math.floor(r() * w);
+    const [top, bottom] = span[x];
+    if (top < 0) continue;
+    let y = top + Math.floor(r() * (bottom - top));
+    for (let s = 0; s < 6 + r() * 8; s++) {
+      tint(x, y, CHAR, 0.55);
+      y++;
+      if (r() < 0.45) x += r() < 0.5 ? -1 : 1;
+      if (x < 0 || x >= w) break;
+    }
+  }
+}
+
 // --- shared painters -------------------------------------------------------
 
 function faceColor(c, face) {
@@ -247,7 +337,7 @@ function roofBox(c, du, dv, w, d, hh, color, top, lift = 0) {
  * Gable roof over the whole footprint, ridge along the a axis, built from
  * one-pixel slices that narrow as they rise.
  */
-function gableRoof(c, rise, color, gable) {
+function gableRoof(c, rise, color, gable, holeSeed) {
   const half = c.by / 2;
   for (let i = 0; i < rise; i++) {
     const dv = Math.round((i * half) / rise);
@@ -256,6 +346,8 @@ function gableRoof(c, rise, color, gable) {
     const ridge = i === rise - 1;
     rasterBox(c.buf, c.ox - dv, c.oy + Math.round(dv / 2) - i - 1, c.ax, d, 1, (face, u, v) => {
       if (face === 'right') return faceColor(gable, face);
+      // Missing shingles: dark holes through to the rafters.
+      if (holeSeed !== undefined && hash2(Math.floor(u / 3), i >> 1, holeSeed) < 0.16) return u % 3 < 1 ? WOOD : CHAR;
       if (face === 'left') return i % 2 ? color : shade(color, -0.12);
       if (ridge) return shade(color, 0.2);
       return v < d / 2 ? shade(color, -0.3) : shade(color, 0.1);
@@ -267,6 +359,7 @@ function gableRoof(c, rise, color, gable) {
 function pane(spec, face, col, floor, topRow, seed, glass = GLASS) {
   const side = face === 'right' ? 50 : 0;
   if (spec.state === 'down') return fireWindow(col, floor + side, topRow, seed);
+  if (spec.state === 'abandoned') return boardWindow(col, floor + side, topRow, seed);
   const fromBottom = spec.floors - 1 - floor;
   if (fromBottom < spec.lit && hash2(col, floor + side, seed) > 0.14) return topRow ? LIT_HI : LIT;
   return faceColor(topRow ? SHEEN : glass, face);
@@ -288,7 +381,11 @@ const BUILDERS = {
       if (face === 'top') return roof(u, v);
       return windowedWall(face, u, v, fw, fh, wall, k.floorH, spec, seed);
     });
-    if (!c.unfinished) {
+    if (c.abandoned) {
+      // One rusted-out unit left; the other was stripped, leaving its pad.
+      roofBox(c, 6, 6, 8, 6, 4, rusty(c, STEEL), shade(RUST, -0.2));
+      roofBox(c, ax - 12, by - 12, 6, 6, 1, shade(rim, -0.3));
+    } else if (!c.unfinished) {
       roofBox(c, 6, 6, 8, 6, 4, STEEL);
       if (spec.floors >= 4) roofBox(c, ax - 12, by - 12, 6, 6, 3, STEEL);
     }
@@ -312,6 +409,12 @@ const BUILDERS = {
       if (r === 0 || u % 3 === 0) return faceColor(shade(wall, -0.05), face);
       if (c.burning) return fireWindow(Math.floor(u / 3) + (face === 'right' ? 50 : 0), floor, r === 1, seed);
       const fromBottom = spec.floors - 1 - floor;
+      if (c.abandoned) {
+        // Glass gone in whole patches, plywood over the lobby.
+        if (fromBottom === 0) return r === 1 ? shade(PLY, -0.3) : PLY;
+        if (hash2(Math.floor(u / 6), floor >> 1, seed + 40) < 0.3) return CHAR;
+        return r === 1 ? mix(SHEEN, GRIME, 0.6) : mix(fc, GRIME, 0.4);
+      }
       const on = fromBottom < spec.lit && hash2(Math.floor(u / 3), floor, seed) > 0.18;
       if (on) return r === 1 ? LIT_HI : LIT;
       return r === 1 ? faceColor(SHEEN, face) : fc;
@@ -321,6 +424,7 @@ const BUILDERS = {
     meta.beacon = { x: top.x, y: top.y - 16 };
     meta.smoke = top;
     if (c.unfinished) return;
+    if (c.abandoned) return brokenMast(c, meta, top.x, top.y, 15);
     for (let i = 1; i <= 15; i++) c.buf.set(top.x, top.y - i, i > 12 ? STEEL : shade(STEEL, -0.3));
     c.buf.set(top.x - 1, top.y - 6, STEEL);
     c.buf.set(top.x + 1, top.y - 6, STEEL);
@@ -340,17 +444,20 @@ const BUILDERS = {
       const fc = faceColor(panel, face);
       const e = edge(face, u, v, fw, fh, fc);
       if (e) return e;
-      if (v >= 2 && v < 5) return faceColor(stripe, face);
-      // Rows of rack LEDs; they go red when the target is down.
+      if (v >= 2 && v < 5) return faceColor(c.abandoned && hash2(u >> 2, 0, seed) < 0.3 ? fc : stripe, face);
+      // Rows of rack LEDs; they go red when the target is down, and
+      // dark when it has been switched off.
       if (v >= 8 && v < fh - 3 && (v - 8) % 4 === 0 && u % 3 === 1 && u > 2 && u < fw - 3) {
+        if (c.abandoned) return DARK;
         if (c.dead) return LED_DOWN;
         const on = hash2(u, v, seed) < spec.frac + 0.05;
         return on ? (hash2(u, v, seed + 1) < 0.3 ? LED_ALT : LED_ON) : DARK;
       }
+      if (c.abandoned && hash2(u >> 1, v >> 2, seed + 50) < 0.1) return mix(fc, RUST, 0.5);
       return u % 6 === 0 ? shade(fc, -0.06) : fc;
     });
-    roofBox(c, 8, 26, 8, 8, 5, STEEL, shade(DARK, 0.4));
-    roofBox(c, 22, 26, 8, 8, 5, STEEL, shade(DARK, 0.4));
+    roofBox(c, 8, 26, 8, 8, 5, rusty(c, STEEL), shade(DARK, 0.4));
+    if (!c.abandoned) roofBox(c, 22, 26, 8, 8, 5, STEEL, shade(DARK, 0.4));
     meta.smoke = roofPoint(c, ax / 2, by / 2);
     meta.beacon = { ...roofPoint(c, 4, 4), y: roofPoint(c, 4, 4).y - 2 };
   },
@@ -362,24 +469,39 @@ const BUILDERS = {
     rasterBox(c.buf, c.ox, c.oy, ax, by, h, (face, u, v, fw, fh) => {
       if (face === 'top') {
         // Saw-tooth skylights.
-        return Math.floor(u) % 10 < 3 && v > 3 && v < by - 3 ? (c.dead ? DARK : SHEEN) : roof(u, v);
+        if (Math.floor(u) % 10 < 3 && v > 3 && v < by - 3) {
+          if (c.abandoned) return hash2(Math.floor(u / 10), Math.floor(v / 3), seed) < 0.5 ? CHAR : mix(SHEEN, GRIME, 0.5);
+          return c.dead ? DARK : SHEEN;
+        }
+        return roof(u, v);
       }
       const fc = faceColor(brick, face);
       const e = edge(face, u, v, fw, fh, fc);
       if (e) return e;
       // Roller door on the front-left wall.
       if (face === 'left' && u > fw * 0.35 && u < fw * 0.65 && v > fh - 10) {
-        return v % 2 ? shade(STEEL, -0.25) : STEEL;
+        const door = rusty(c, STEEL);
+        return v % 2 ? shade(door, -0.25) : door;
       }
       // High clerestory windows.
       if (v >= 3 && v < 6 && u % 5 > 1 && u > 2 && u < fw - 2) {
         if (c.burning) return fireWindow(u, 0, false, seed);
+        if (c.abandoned) return boardWindow(Math.floor(u / 5), 0, v === 3, seed, true);
         return hash2(u, 0, seed) < spec.frac ? LIT : GLASS;
       }
       const mortar = v % 3 === 0 || (u + (Math.floor(v / 3) % 2) * 2) % 4 === 0;
       return mortar ? shade(fc, -0.08) : fc;
     });
-    // Chimney at the back corner.
+    // Chimney at the back corner; on an abandoned factory, its top has
+    // crumbled away to a ragged stump.
+    if (c.abandoned) {
+      const ch = roofBox(c, 6, 6, 6, 6, 13, shade(BRICK, -0.2), DARK);
+      roofBox(c, 6, 6, 2, 6, 3, shade(BRICK, -0.2), DARK, 13);
+      roofBox(c, 6, 6, 6, 2, 2, shade(BRICK, -0.3), DARK, 13);
+      meta.smoke = { x: ch.x, y: ch.y };
+      meta.beacon = { x: ch.x, y: ch.y - 6 };
+      return;
+    }
     const ch = roofBox(c, 6, 6, 6, 6, 24, shade(BRICK, -0.1), DARK);
     meta.smoke = { x: ch.x, y: ch.y };
     meta.beacon = { x: ch.x, y: ch.y - 3 };
@@ -395,26 +517,43 @@ const BUILDERS = {
       const e = edge(face, u, v, fw, fh, fc);
       if (e) return e;
       if (v < 2) return shade(fc, 0.1);
-      // Striped awning.
-      if (v >= 4 && v < 7) return faceColor(Math.floor(u / 3) % 2 ? base : [245, 242, 235], face);
-      if (v === 7) return shade(faceColor(base, face), -0.3);
+      // Striped awning; torn to ribbons on an abandoned shop.
+      const torn = c.abandoned && hash2(Math.floor(u / 2), 0, seed + 60) < 0.4;
+      if (v >= 4 && v < 7 && !(torn && v > 4 + (u % 2))) {
+        const stripe = Math.floor(u / 3) % 2 ? base : [245, 242, 235];
+        return faceColor(c.abandoned ? mix(stripe, GRIME, 0.35) : stripe, face);
+      }
+      if (v === 7 && !torn) return shade(faceColor(base, face), -0.3);
       // Shop window and door.
       if (v >= 8 && v < fh - 1 && u > 2 && u < fw - 3) {
         const door = face === 'left' && u > fw / 2 - 2 && u < fw / 2 + 2;
+        if (door && c.abandoned) return boardedDoor(Math.floor(u - (fw / 2 - 2)), v - 8, 4, fh - 9);
         if (door) return shade(DARK, 0.15);
+        if (c.abandoned) {
+          // Sheets of plywood over the whole shopfront, one pried off.
+          const sheet = Math.floor(u / 5);
+          if (hash2(sheet, face === 'right' ? 1 : 0, seed + 61) < 0.2) return v === 8 ? mix(SHEEN, GRIME, 0.5) : CHAR;
+          return u % 5 === 0 ? shade(PLY, -0.3) : hash2(sheet, v >> 1, seed) < 0.15 ? shade(PLY, -0.12) : PLY;
+        }
         if (u % 8 === 0) return fc;
         if (c.burning) return fireWindow(u >> 2, face === 'right' ? 1 : 0, v === 8, seed);
         return lit ? (v === 8 ? LIT_HI : mix(LIT, GLASS, 0.35)) : faceColor(GLASS, face);
       }
       return fc;
     });
-    // Rooftop sign.
+    // Rooftop sign. An abandoned shop's has lost a post and swung down at
+    // one end, with letters missing.
     const p = roofPoint(c, ax / 2, by / 2);
     for (let i = -5; i <= 5; i++) {
-      for (let j = 0; j < 4; j++) c.buf.set(p.x + i, p.y - 6 - j + Math.round(i / 2), j === 0 || j === 3 ? DARK : lit ? LIT : shade(base, -0.2));
+      const droop = c.abandoned && i > -2 ? i + 2 : 0;
+      for (let j = 0; j < 4; j++) {
+        let col = j === 0 || j === 3 ? DARK : lit ? LIT : shade(base, -0.2);
+        if (c.abandoned && j > 0 && j < 3 && hash2(i, j, seed + 62) < 0.35) col = CHAR;
+        c.buf.set(p.x + i, p.y - 6 - j + Math.round(i / 2) + droop, col);
+      }
     }
-    c.buf.set(p.x - 4, p.y - 2 - 2, STEEL);
-    c.buf.set(p.x + 4, p.y - 2 + 2, STEEL);
+    c.buf.set(p.x - 4, p.y - 2 - 2, rusty(c, STEEL));
+    if (!c.abandoned) c.buf.set(p.x + 4, p.y - 2 + 2, STEEL);
     meta.smoke = p;
     meta.beacon = { x: p.x, y: p.y - 12 };
   },
@@ -437,10 +576,15 @@ const BUILDERS = {
       const fromBottom = spec.floors - 1 - floor;
       // Fire escape on the right wall: a landing and a ladder per floor.
       if (face === 'right' && fromBottom > 0 && u >= fx && u < fx + 9) {
-        if (r === k.floorH - 1 || (r === k.floorH - 3 && (u - fx) % 2 === 0)) return IRON;
-        if (u - fx === r + 1) return shade(IRON, 0.2);
+        const iron = rusty(c, IRON);
+        // An abandoned building's fire escape has lost some landings.
+        const gone = c.abandoned && hash2(floor, 3, seed) < 0.3;
+        if (!gone && (r === k.floorH - 1 || (r === k.floorH - 3 && (u - fx) % 2 === 0))) return iron;
+        if (u - fx === r + 1) return shade(iron, 0.2);
       }
-      if (fromBottom === 0 && face === 'left' && Math.abs(u - fw / 2) < 3 && r >= 1) return shade(DARK, 0.1);
+      if (fromBottom === 0 && face === 'left' && Math.abs(u - fw / 2) < 3 && r >= 1) {
+        return c.abandoned ? boardedDoor(Math.floor(u - fw / 2 + 2.5), r - 1, 5, k.floorH - 1) : shade(DARK, 0.1);
+      }
       const wu = u % 6;
       if (u > 1 && u < fw - 2) {
         if (r >= 1 && r < 5 && (wu === 2 || wu === 3)) return pane(spec, face, Math.floor(u / 6), floor, r === 1, seed);
@@ -454,6 +598,23 @@ const BUILDERS = {
     roofBox(c, 5, by - 11, 6, 6, 4, shade(brick, -0.1));
     // Water tower: legs, a hooped barrel and a conical cap.
     const [du, dv, lift] = [ax - 14, 6, 5];
+    if (c.abandoned) {
+      // Its legs gave way: two stumps, and the capless barrel on the roof,
+      // staves missing.
+      for (const [lu, lv, n] of [[0, 0, 4], [6, 0, 2]]) {
+        const p = roofPoint(c, du + lu, dv + lv);
+        for (let i = 0; i < n; i++) c.buf.set(p.x, p.y - i, rusty(c, IRON));
+      }
+      const wood = shade(WOOD, -0.4);
+      const x = c.ox + (du + 4 - dv), y = c.oy + Math.round((du + 4 + dv) / 2) - 6;
+      rasterBox(c.buf, x, y, 7, 7, 6, (face, u, v, fw, fh) => {
+        if (face === 'top') return DARK;
+        const fc = faceColor(wood, face);
+        if (hash2(u, 0, seed + 70) < 0.2 && v < 4) return CHAR;
+        return edge(face, u, v, fw, fh, fc) || (v % 3 === 1 ? shade(fc, -0.3) : fc);
+      });
+      return;
+    }
     for (const [lu, lv] of [[0, 0], [6, 0], [0, 6], [6, 6]]) {
       const p = roofPoint(c, du + lu, dv + lv);
       for (let i = 0; i < lift; i++) c.buf.set(p.x, p.y - i, IRON);
@@ -486,11 +647,19 @@ const BUILDERS = {
       for (const [i, cx] of centres.entries()) {
         const du = Math.floor(u - cx);
         if (fromBottom === 0 && face === 'left' && i === 1) {
-          if (du >= -2 && du < 2 && r >= 2) return r === 2 ? shade(siding, 0.4) : shade(base, -0.45);
+          if (du >= -2 && du < 2 && r >= 2) {
+            if (c.abandoned) return boardedDoor(du + 2, r - 2, 4, k.floorH - 2);
+            return r === 2 ? shade(siding, 0.4) : shade(base, -0.45);
+          }
           continue;
         }
         if (r >= 2 && r < 6) {
-          if (du >= -2 && du < 2) return pane(spec, face, i, floor, r === 2, seed);
+          if (du >= -2 && du < 2) return c.abandoned ? faceColor(boardedDoor(du + 2, r - 2, 4, 4), face) : pane(spec, face, i, floor, r === 2, seed);
+          // Shutters: some have fallen off, others hang crooked.
+          if (c.abandoned && (du === -3 || du === 2)) {
+            const s = hash2(i, floor + (face === 'right' ? 50 : 0) + du, seed);
+            if (s < 0.35 || (s < 0.6 && r === 2)) continue;
+          }
           if (du === -3 || du === 2) return faceColor(shutter, face);
         }
       }
@@ -501,8 +670,8 @@ const BUILDERS = {
     meta.beacon = { x: ridge.x, y: ridge.y - rise - 4 };
     meta.smoke = ridge;
     if (c.unfinished) return;
-    const chimney = roofBox(c, ax - 9, 5, 4, 4, rise + 3, shade(BRICK, c.dead ? -0.5 : -0.1), DARK);
-    gableRoof(c, rise, shingle, siding);
+    const chimney = roofBox(c, ax - 9, 5, 4, 4, c.abandoned ? rise - 2 : rise + 3, shade(BRICK, c.dead ? -0.5 : -0.1), DARK);
+    gableRoof(c, rise, shingle, siding, c.abandoned ? seed : undefined);
     meta.smoke = chimney;
   },
 
@@ -521,7 +690,10 @@ const BUILDERS = {
       if (v < cap) return faceColor(v === 1 ? gold : pier, face);
       const fv = v - cap, floor = floorOff + Math.floor(fv / k.floorH), r = fv % k.floorH;
       const fromBottom = spec.floors - 1 - floor;
-      if (fromBottom === 0 && face === 'left' && Math.abs(u - fw / 2) < 4 && r >= 1) return r === 1 ? gold : shade(DARK, 0.1);
+      if (fromBottom === 0 && face === 'left' && Math.abs(u - fw / 2) < 4 && r >= 1) {
+        if (c.abandoned) return r === 1 ? gold : boardedDoor(Math.floor(u - fw / 2 + 3.5), r - 2, 7, k.floorH - 2);
+        return r === 1 ? gold : shade(DARK, 0.1);
+      }
       if (u % 5 === 0 || u < 2 || u > fw - 3) return faceColor(pier, face);
       if (r === 0) return faceColor(shade(stone, -0.25), face);
       return pane(spec, face, Math.floor(u / 5), floor, r === 1, seed);
@@ -545,11 +717,14 @@ const BUILDERS = {
     // Crown, then a spire with an aviation light.
     const cw = top.w - 8, cd = top.d - 8;
     rasterBox(c.buf, top.x, top.y + 4 - 5, cw, cd, 5, (face, u, v, fw, fh) => {
+      // Chunks of an abandoned building's crown have fallen.
+      if (c.abandoned && face !== 'top' && v < 3 && hash2(u >> 1, face === 'right' ? 1 : 0, seed + 80) < 0.4) return null;
       if (face === 'top') return pier;
       const fc = faceColor(pier, face);
       return edge(face, u, v, fw, fh, fc) || (v === 2 || u % 3 === 1 ? faceColor(gold, face) : fc);
     });
     const sx = Math.round(centre.x), sy = centre.y - 5;
+    if (c.abandoned) return brokenMast(c, meta, sx, sy, 14, gold);
     for (let i = 0; i < 14; i++) {
       c.buf.set(sx, sy - i, i < 9 ? gold : STEEL);
       if (i < 4) {
@@ -567,9 +742,15 @@ const BUILDERS = {
     const band = mix(base, [240, 240, 236], c.dead ? 0.2 : 0.72);
     const glass = mix(GLASS, base, 0.2);
     const plain = roofPaint(ax, by, shade(band, -0.1), mix(ROOF, band, 0.4), seed);
-    const style = c.dead || c.unfinished ? 'plain' : spec.floors >= 8 ? 'helipad' : seed % 2 ? 'garden' : 'solar';
+    const style = c.abandoned ? 'overgrown' : c.dead || c.unfinished ? 'plain' : spec.floors >= 8 ? 'helipad' : seed % 2 ? 'garden' : 'solar';
     const roof = (u, v) => {
       if (u < 2 || v < 2 || u > ax - 2 || v > by - 2 || style === 'plain') return plain(u, v);
+      if (style === 'overgrown') {
+        // Weeds and dead grass have taken the roof.
+        const n = hash2(Math.floor(u / 3), Math.floor(v / 3), seed + 90);
+        if (n < 0.35) return plain(u, v);
+        return n < 0.6 ? mix(GRASS, [140, 120, 70], 0.55) : hash2(Math.floor(u), Math.floor(v), seed) < 0.3 ? shade(IVY, -0.2) : IVY;
+      }
       if (style === 'solar') {
         return Math.floor(v) % 6 < 4 && u > 4 && u < ax - 4 ? (Math.floor(u) % 4 === 0 ? shade(SOLAR, 0.25) : SOLAR) : plain(u, v);
       }
@@ -588,14 +769,18 @@ const BUILDERS = {
       const fv = v - 3, floor = Math.floor(fv / k.floorH), r = fv % k.floorH;
       const fromBottom = spec.floors - 1 - floor;
       if (r < 2) return r === 0 ? shade(fc, -0.12) : fc;
-      if (fromBottom === 0 && face === 'left' && Math.abs(u - fw / 2) < 3) return shade(DARK, 0.2);
+      if (fromBottom === 0 && face === 'left' && Math.abs(u - fw / 2) < 3) {
+        return c.abandoned ? boardedDoor(Math.floor(u - fw / 2 + 2.5), r - 2, 5, k.floorH - 2) : shade(DARK, 0.2);
+      }
       if (u % 6 === 0) return shade(fc, -0.1);
       return pane(spec, face, Math.floor(u / 6), floor, r === 2, seed, glass);
     });
-    if (style === 'garden') {
+    if (style === 'garden' || style === 'overgrown') {
+      // Planters, or on an abandoned roof, scrubby self-seeded bushes.
       const r = rng(seed + 9);
-      for (let i = 0; i < 4; i++) {
-        roofBox(c, Math.round(4 + r() * (ax - 10)), Math.round(4 + r() * (by - 10)), 3, 3, 3, shade(GRASS, -0.1), shade(GRASS, 0.15));
+      const bush = style === 'garden' ? GRASS : mix(IVY, [120, 100, 60], 0.35);
+      for (let i = 0; i < (style === 'garden' ? 4 : 6); i++) {
+        roofBox(c, Math.round(4 + r() * (ax - 10)), Math.round(4 + r() * (by - 10)), 3, 3, 2 + Math.round(r() * 2), shade(bush, -0.1), shade(bush, 0.15));
       }
     }
     meta.smoke = roofPoint(c, ax / 2, by / 2);
@@ -610,13 +795,15 @@ const BUILDERS = {
       const fc = faceColor(wall, face);
       const e = edge(face, u, v, fw, fh, fc);
       if (e) return e;
-      if (face === 'left' && u > fw / 2 - 2 && u < fw / 2 + 2 && v > 2) return DARK;
+      if (face === 'left' && u > fw / 2 - 2 && u < fw / 2 + 2 && v > 2) return c.abandoned ? boardedDoor(Math.floor(u - fw / 2 + 1.5), v - 3, 3, fh - 4) : DARK;
       return fc;
     });
-    // Lattice mast: red/white segments with cross bracing.
+    // Lattice mast: red/white segments with cross bracing. An abandoned
+    // station's has buckled, its rusted top section folded over.
     const top = roofPoint(c, ax / 2, by / 2);
-    const H = 42;
-    const red = hexToRgb('#d8463c'), white = hexToRgb('#eeeeee');
+    const H = c.abandoned ? 22 : 42;
+    let red = hexToRgb('#d8463c'), white = hexToRgb('#eeeeee');
+    if (c.abandoned) [red, white] = [mix(red, RUST, 0.6), mix(white, GRIME, 0.5)];
     for (let i = 0; i < H; i++) {
       const y = top.y - i;
       const spread = Math.round(((H - i) / H) * 3);
@@ -625,8 +812,18 @@ const BUILDERS = {
       c.buf.set(top.x + spread, y, shade(col, -0.2));
       if (i % 6 === 0) for (let x = -spread; x <= spread; x++) c.buf.set(top.x + x, y, shade(col, -0.1));
     }
-    c.buf.set(top.x - 2, top.y - 30, STEEL);
-    c.buf.set(top.x + 2, top.y - 30, STEEL);
+    if (c.abandoned) {
+      for (let j = 1; j < 16; j++) {
+        const x = top.x + j, y = top.y - H + Math.round(j * 0.9);
+        const col = Math.floor(j / 5) % 2 ? red : white;
+        c.buf.set(x, y, col);
+        c.buf.set(x, y - 1, shade(col, -0.2));
+        if (j % 5 === 0) c.buf.set(x, y + 1, shade(col, -0.3));
+      }
+    } else {
+      c.buf.set(top.x - 2, top.y - 30, STEEL);
+      c.buf.set(top.x + 2, top.y - 30, STEEL);
+    }
     meta.beacon = { x: top.x, y: top.y - H - 1 };
     meta.smoke = top;
   },
@@ -650,6 +847,7 @@ function tier(c, du, dv, w, d, hh, lift, paint) {
 function landmarkPane(c, face, col, floor, topRow, glassFc) {
   const side = face === 'right' ? 50 : 0;
   if (c.burning) return fireWindow(col, floor + side, topRow, c.seed);
+  if (c.abandoned) return boardWindow(col, floor + side, topRow, c.seed, floor >= 2);
   if (hash2(col, floor + side, c.seed) < c.spec.frac * 0.6) return topRow ? LIT_HI : LIT;
   return topRow ? faceColor(SHEEN, face) : glassFc;
 }
@@ -676,7 +874,7 @@ function neon(c) {
 }
 
 /** Half-ellipsoid dome over the point (cx, cy): radius R across, Rv tall. */
-function dome(buf, cx, cy, R, Rv, color, rib) {
+function dome(buf, cx, cy, R, Rv, color, rib, holeSeed) {
   for (let py = -Rv; py <= Math.ceil(R / 2); py++)
     for (let px = -R; px <= R; px++) {
       const q = py <= 0 ? (px * px) / (R * R) + (py * py) / (Rv * Rv) : (px * px) / (R * R) + (py * py) / ((R * R) / 4);
@@ -685,6 +883,8 @@ function dome(buf, cx, cy, R, Rv, color, rib) {
       if (py <= 0 && rib && px % 6 === 0) col = rib;
       if (py > 0) col = shade(col, -0.2);
       if (Math.hypot(px + R / 3, py + Rv / 2) < R / 6) col = shade(col, 0.35); // highlight
+      // Fallen-in panels, the bare ribs left standing.
+      if (holeSeed !== undefined && py < -2 && px % 6 !== 0 && hash2((px + R) >> 2, (py + Rv) >> 2, holeSeed) < 0.3) col = shade(CHAR, 0.1 + (py + Rv) * 0.01);
       buf.set(cx + px, cy + py, col);
     }
 }
@@ -697,8 +897,11 @@ function mast(c, meta, x, y, len, color = STEEL) {
 
 /** Crenellations along a box's top edges, back edges first. */
 function merlons(c, du, dv, w, d, lift, color) {
-  const box = (u, v) => tier(c, du + u, dv + v, 3, 3, 3, lift, (face, uu, vv, fw, fh) =>
-    face === 'top' ? shade(color, 0.12) : edge(face, uu, vv, fw, fh, faceColor(color, face)) || faceColor(color, face));
+  const box = (u, v) => {
+    if (c.abandoned && hash2(du + u, dv + v + lift, c.seed + 100) < 0.4) return; // tumbled down
+    tier(c, du + u, dv + v, 3, 3, 3, lift, (face, uu, vv, fw, fh) =>
+      face === 'top' ? shade(color, 0.12) : edge(face, uu, vv, fw, fh, faceColor(color, face)) || faceColor(color, face));
+  };
   for (let u = 0; u + 3 <= w; u += 6) box(u, 0);
   for (let v = 6; v + 3 <= d; v += 6) box(0, v);
   for (let v = 6; v + 3 <= d; v += 6) box(w - 3, v);
@@ -731,6 +934,7 @@ const LANDMARK_BUILDERS = {
     meta.smoke = peak;
     if (c.unfinished) return (meta.beacon = { x: peak.x, y: peak.y - 3 });
     roofBox({ ...c, ox: top.x, oy: top.y }, 6, 6, top.w - 12, top.d - 12, 6, frame, glow);
+    if (c.abandoned) return brokenMast(c, meta, peak.x, peak.y - 6, 32);
     mast(c, meta, peak.x, peak.y - 6, 32);
   },
 
@@ -752,14 +956,21 @@ const LANDMARK_BUILDERS = {
     };
     const a = tower(8, 186);
     // Sky bridge two thirds of the way up, between the towers' facing walls.
-    tier(c, 38, 37, 12, 12, 8, 120, (face, u, v, fw, fh) => {
-      if (face === 'top') return shade(frame, 0.1);
-      const fc = faceColor(frame, face);
-      return edge(face, u, v, fw, fh, fc) || (v >= 2 && v < 6 ? landmarkPane(c, face, u >> 1, 99, v === 2, faceColor(glass, face)) : fc);
-    });
+    // On abandoned twins its middle has fallen, leaving a stub on each side.
+    const bridge = (du, w) =>
+      tier(c, du, 37, w, 12, 8, 120, (face, u, v, fw, fh) => {
+        if (face === 'top') return shade(frame, 0.1);
+        const fc = faceColor(frame, face);
+        return edge(face, u, v, fw, fh, fc) || (v >= 2 && v < 6 ? landmarkPane(c, face, u >> 1, 99, v === 2, faceColor(glass, face)) : fc);
+      });
+    if (c.abandoned) {
+      bridge(38, 4);
+      bridge(46, 4);
+    } else bridge(38, 12);
     const b = tower(50, 176);
     meta.smoke = a.t.at(15, 15);
     if (c.unfinished) return (meta.beacon = { ...a.cap.at(9, 9) });
+    if (c.abandoned) return brokenMast(c, meta, a.cap.at(9, 9).x, a.cap.at(9, 9).y, 22);
     const pb = b.cap.at(9, 9);
     for (let i = 1; i <= 14; i++) c.buf.set(pb.x, pb.y - i, shade(STEEL, -0.25));
     const pa = a.cap.at(9, 9);
@@ -794,10 +1005,11 @@ const LANDMARK_BUILDERS = {
     const top = drum.at(18, 18);
     meta.smoke = roofPoint(c, ax / 2, by / 2);
     const domeColor = c.burning ? SOOT : mix(base, [200, 214, 206], c.dead ? 0.6 : 0.25);
-    dome(c.buf, top.x, top.y, 22, 28, domeColor, shade(domeColor, -0.18));
-    // Lantern and flagpole.
+    dome(c.buf, top.x, top.y, 22, 28, domeColor, shade(domeColor, -0.18), c.abandoned ? seed : undefined);
+    // Lantern and flagpole. An abandoned capitol's flag is long gone.
     roofBox({ ...c, ox: top.x, oy: top.y - 28 + 3 }, -3, -3, 6, 6, 6, gold, shade(gold, 0.2));
     if (c.unfinished) return (meta.beacon = { x: top.x, y: top.y - 34 });
+    if (c.abandoned) return brokenMast(c, meta, top.x, top.y - 34, 14);
     const fy = top.y - 34;
     mast(c, meta, top.x, fy, 14);
     const flag = c.dead ? shade(base, -0.4) : base;
@@ -823,7 +1035,9 @@ const LANDMARK_BUILDERS = {
       for (let t = 0; t < 360; t += 1.5) {
         const a = (t * Math.PI) / 180;
         if (Math.sin(a) > 0 !== front) continue;
-        c.buf.set(cx + Math.round(Math.cos(a) * rx), y + Math.round(Math.sin(a) * rx * 0.5), front ? glow : shade(glow, -0.35));
+        if (c.abandoned && hash2(Math.floor(t / 24), lift, seed) < 0.45) continue; // snapped sections
+        const ring = c.abandoned ? mix(STEEL, RUST, 0.6) : glow; // dead neon shows the rusted frame
+        c.buf.set(cx + Math.round(Math.cos(a) * rx), y + Math.round(Math.sin(a) * rx * 0.5), front ? ring : shade(ring, -0.35));
       }
     };
     const halos = c.unfinished ? [] : [[70, 30], [130, 22]];
@@ -835,6 +1049,8 @@ const LANDMARK_BUILDERS = {
       tier(c, du, du, w, w, segH, lift, (face, u, v, fw, fh) => {
         if (face === 'top') return shade(body, 0.1);
         const fc = faceColor(body, face);
+        // Cladding panels fallen away, showing the dark core.
+        if (c.abandoned && hash2(u >> 2, i, seed + 110) < 0.18 && v > 1) return shade(CHAR, 0.15);
         if (u === 0 || u === fw - 1) return shade(fc, face === 'left' && u === fw - 1 ? 0.25 : -0.3);
         if (v === 0 || Math.abs(u - fw / 2) < 1) return lit ? faceColor(glow, face) : shade(fc, 0.1);
         return hash2(u, v + i * segH, seed) < 0.04 ? shade(fc, 0.15) : fc;
@@ -846,6 +1062,22 @@ const LANDMARK_BUILDERS = {
     const tipY = cy0 - 18 - segs * segH - Math.round((34 - segs * 2) / 2);
     for (let i = 0; i < 10; i++) for (let x = -Math.floor((10 - i) / 3); x <= Math.floor((10 - i) / 3); x++) c.buf.set(cx + x, tipY - i, x ? body : glow);
     meta.smoke = { x: cx, y: tipY };
+    meta.fire.push({ x: cx, y: tipY, roof: true });
+    if (c.abandoned) {
+      // The orb has come down and lies cracked on the plinth, beside the
+      // obelisk (clear of the ivy, which climbs the plinth's walls).
+      const p = { x: cx + 22, y: cy0 + 1 };
+      for (let y = -7; y <= 7; y++)
+        for (let x = -7; x <= 7; x++) {
+          const r = Math.hypot(x, y);
+          if (r > 7) continue;
+          const crack = x === Math.round(y * 0.4) - 1 || (y === 1 && x > 0);
+          const hi = Math.hypot(x + 2, y + 2) < 2 ? 0.35 : 0;
+          c.buf.set(p.x + x, p.y + y, crack ? CHAR : shade(mix(SHEEN, GRIME, 0.35), hi + 0.1 - (x + 6) * 0.03));
+        }
+      meta.beacon = { x: cx, y: tipY - 11 };
+      return;
+    }
     const oy = tipY - 22;
     if (!c.unfinished)
       for (let y = -7; y <= 7; y++)
@@ -854,7 +1086,6 @@ const LANDMARK_BUILDERS = {
           if (r <= 7) c.buf.set(cx + x, oy + y, r < 3 ? [255, 255, 255] : shade(glow, (r < 5 ? 0.3 : 0) - (x + 7) * 0.02));
         }
     meta.beacon = { x: cx, y: oy - 9 };
-    meta.fire.push({ x: cx, y: tipY, roof: true });
   },
 
   // A castle: curtain walls with a gatehouse, corner towers with pointed
@@ -878,12 +1109,15 @@ const LANDMARK_BUILDERS = {
     const wallH = 30, towerH = 52, T = 18, W = 6;
     const towerAt = (du, dv) => {
       tier(c, du, dv, T, T, towerH, 0, (f, u, v, fw, fh) => block(f, u, v, fw, fh, 0, true));
-      // Pointed roof, in slices.
-      for (let i = 0; i < 16; i++) {
+      // Pointed roof, in slices. On a ruin it has fallen in, leaving the
+      // lower courses around an open, dark top.
+      const slices = c.abandoned ? 3 + Math.floor(hash2(du, dv, seed) * 4) : 16;
+      for (let i = 0; i < slices; i++) {
         const inset = Math.round((i * (T + 4)) / 32) - 2;
         if (T - 2 * inset < 2) break;
+        const last = c.abandoned && i === slices - 1;
         tier(c, du + inset, dv + inset, T - 2 * inset, T - 2 * inset, 1, towerH + i, (face, u, v) =>
-          face === 'top' ? shade(roofCol, 0.15) : faceColor(i % 2 ? roofCol : shade(roofCol, -0.1), face));
+          face === 'top' ? (last ? (Math.floor(u + v) % 5 === 0 ? shade(GRIME, 0.1) : CHAR) : shade(roofCol, 0.15)) : faceColor(i % 2 ? roofCol : shade(roofCol, -0.1), face));
       }
     };
     const wall = (du, dv, w, d, gate) =>
@@ -915,6 +1149,7 @@ const LANDMARK_BUILDERS = {
     meta.smoke = kt;
     meta.fire = [{ ...kt, roof: true }, { ...keep.at(8, 26), roof: true }, { ...roofPoint(c, ax / 2, by - 10), y: roofPoint(c, ax / 2, by - 10).y + 6, roof: false }];
     if (c.unfinished) return (meta.beacon = { x: kt.x, y: kt.y - 4 });
+    if (c.abandoned) return brokenMast(c, meta, kt.x, kt.y - 3, 24, WOOD);
     mast(c, meta, kt.x, kt.y - 3, 24, WOOD);
     const flag = c.dead ? shade(base, -0.4) : base;
     for (let j = 0; j < 7; j++)
@@ -927,7 +1162,7 @@ const LANDMARK_BUILDERS = {
     const { ax, by, seed, base } = c;
     const band = mix(base, [240, 240, 236], c.dead ? 0.2 : 0.7);
     const glass = mix(GLASS, base, 0.2);
-    const green = c.burning ? SOOT : c.dead ? mix(GRASS, [110, 110, 115], 0.5) : GRASS;
+    const green = c.burning ? SOOT : c.abandoned ? mix(GRASS, [140, 118, 70], 0.5) : c.dead ? mix(GRASS, [110, 110, 115], 0.5) : GRASS;
     const steps = 4, rise = 30, step = 10;
     const gardens = [];
     for (let i = 0; i < steps; i++) {
@@ -953,13 +1188,22 @@ const LANDMARK_BUILDERS = {
         }
     }
     for (const g of gardens.sort((p, q) => p.y - q.y)) {
+      if (c.abandoned) {
+        // Dead trees: bare trunks with a couple of branches.
+        const bark = shade(WOOD, -0.3);
+        for (let y = 0; y < 5; y++) c.buf.set(g.x, g.y - y, bark);
+        c.buf.set(g.x - 1, g.y - 3, bark);
+        c.buf.set(g.x + 1, g.y - 4, bark);
+        continue;
+      }
       for (let y = -4; y <= 0; y++) for (let x = -2; x <= 2; x++) if (Math.abs(x) + Math.abs(y + 2) <= 3) c.buf.set(g.x + x, g.y + y, shade(green, -0.05 + (y + 4) * -0.05 + (x < 0 ? 0.1 : 0)));
     }
     const top = roofPoint(c, ax / 2, by / 2);
     meta.smoke = top;
     if (c.unfinished) return (meta.beacon = { x: top.x, y: top.y - 3 });
     const domeColor = c.dead ? shade(SHEEN, -0.3) : mix(SHEEN, [190, 240, 255], 0.35);
-    dome(c.buf, top.x, top.y, 16, 18, domeColor, shade(domeColor, 0.3));
+    dome(c.buf, top.x, top.y, 16, 18, domeColor, shade(domeColor, 0.3), c.abandoned ? seed : undefined);
+    if (c.abandoned) return brokenMast(c, meta, top.x, top.y - 18, 12);
     mast(c, meta, top.x, top.y - 18, 12);
   },
 };
@@ -973,9 +1217,12 @@ function windowedWall(face, u, v, fw, fh, wall, floorH, spec, seed) {
   const fv = v - 3, floor = Math.floor(fv / floorH), r = fv % floorH;
   const fromBottom = spec.floors - 1 - floor;
   // Ground floor entrance on the front-left wall.
-  if (fromBottom === 0 && face === 'left' && u > fw / 2 - 3 && u < fw / 2 + 3 && r >= 2) return DARK;
+  if (fromBottom === 0 && face === 'left' && u > fw / 2 - 3 && u < fw / 2 + 3 && r >= 2) {
+    return spec.state === 'abandoned' ? boardedDoor(Math.floor(u - fw / 2 + 2.5), r - 2, 5, floorH - 2) : DARK;
+  }
   if (r >= 2 && r < 5 && u % 4 >= 1 && u % 4 < 3 && u > 1 && u < fw - 2) {
     if (spec.state === 'down') return fireWindow(u >> 2, floor + (face === 'right' ? 50 : 0), r === 2, seed);
+    if (spec.state === 'abandoned') return boardWindow(u >> 2, floor + (face === 'right' ? 50 : 0), r === 2, seed);
     const on = fromBottom < spec.lit && hash2(u >> 2, floor + (face === 'right' ? 50 : 0), seed) > 0.12;
     if (on) return r === 2 ? LIT_HI : LIT;
     return r === 2 ? faceColor(SHEEN, face) : faceColor(GLASS, face);
@@ -1250,6 +1497,7 @@ export const STATE_COLORS = {
   up: '#3fbf6a',
   degraded: '#f0b429',
   down: '#e5484d',
+  abandoned: '#a2795a',
   unknown: '#8b93a1',
 };
 
@@ -1366,6 +1614,51 @@ export function coneSprite() {
   buf.rect(0, 6, 5, 1, shade(orange, -0.45));
   coneCache = { canvas: buf.toCanvas(), cx: 2, cy: 6 };
   return coneCache;
+}
+
+const fenceCache = new Map();
+
+/**
+ * One tile of chain-link fence along `axis` ('x' or 'y'), for the lot of an
+ * abandoned building. Variant 1 has lost its top rail and sags; variant 2
+ * is half torn down. The anchor (cx, cy) is the start of the run on the ground.
+ */
+export function fenceSprite(axis, variant) {
+  const key = axis + variant;
+  if (fenceCache.has(key)) return fenceCache.get(key);
+  const L = 16, H = 7;
+  const buf = new PixBuf(L + 1, H + L / 2 + 2);
+  const post = hexToRgb('#6f7279'), mesh = hexToRgb('#b4b8be'), rail = hexToRgb('#8f939a');
+  for (let t = 0; t <= L; t++) {
+    const x = axis === 'x' ? t : L - t;
+    const gy = H + Math.round(t / 2);
+    // How high the mesh reaches here: sagging between posts, or torn down.
+    const sag = variant === 1 ? Math.round(Math.sin((t / L) * Math.PI) * 2) : 0;
+    const top = variant === 2 && t > 4 ? Math.round(H * 0.4) : H - sag;
+    for (let k = 1; k < top; k++) if ((t + k) % 3 === 0 || (t - k + 30) % 3 === 0) buf.set(x, gy - k, mesh, 170);
+    if (variant === 0) buf.set(x, gy - H, rail);
+    if (t === 0 || (t === L && variant !== 2)) for (let k = 0; k <= H; k++) buf.set(x, gy - k, k === H ? shade(post, 0.3) : post);
+  }
+  const s = { canvas: buf.toCanvas(), cx: axis === 'x' ? 0 : L, cy: H };
+  fenceCache.set(key, s);
+  return s;
+}
+
+let signCache = null;
+
+/** A "keep out" notice on a post: a red band over white, with a line of text. */
+export function signSprite() {
+  if (signCache) return signCache;
+  const buf = new PixBuf(9, 12);
+  const red = hexToRgb('#c8372d'), white = hexToRgb('#ece6d6');
+  for (let y = 5; y < 12; y++) buf.set(4, y, WOOD);
+  buf.rect(0, 0, 9, 6, white);
+  buf.rect(0, 0, 9, 2, red);
+  for (let x = 1; x < 8; x += 2) buf.set(x, 3, DARK);
+  for (let x = 2; x < 7; x += 2) buf.set(x, 4, shade(DARK, 0.3));
+  buf.rect(0, 5, 9, 1, shade(white, -0.3));
+  signCache = { canvas: buf.toCanvas(), cx: 4, cy: 11 };
+  return signCache;
 }
 
 const truckCache = new Map();

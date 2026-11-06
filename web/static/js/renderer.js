@@ -2,8 +2,9 @@
 // status effects, hit-testing and the minimap.
 
 import {
-  buildingSpec, buildingSprite, carSprite, treeSprite, mountainSprite, pinSprite, craneSprite, coneSprite, fireTruckSprite, STATE_COLORS,
+  buildingSpec, buildingSprite, carSprite, treeSprite, mountainSprite, pinSprite, craneSprite, coneSprite, fireTruckSprite, fenceSprite, signSprite, STATE_COLORS,
 } from './sprites.js';
+import { hash2 } from './pixel.js';
 
 const KIND_SUBTITLE = { namespace: 'k8s namespace', compose: 'compose app' };
 
@@ -279,9 +280,10 @@ export class Renderer {
     for (const b of this.city.buildings) {
       const c = b.sprite.canvas;
       if (visible(b.drawX, b.drawY, c.width, c.height)) items.push({ depth: b.depth, img: c, x: b.drawX, y: b.drawY, a: 1 });
-      const { crane, cones, truck } = b.props;
+      const { crane, cones, truck, fence } = b.props;
       if (crane) items.push({ depth: crane.depth, img: crane.sprite.canvas, x: crane.x, y: crane.y, a: 1 });
       for (const cone of cones || []) items.push({ ...cone, a: 1 });
+      for (const f of fence || []) items.push({ ...f, a: 1 });
       if (truck) items.push({ depth: truck.depth, img: truck.sprite.canvas, x: truck.x, y: truck.y, a: 1 });
     }
     for (const car of this.traffic.cars) {
@@ -520,6 +522,30 @@ export class Renderer {
       const sp = fireTruckSprite(alongY ? 'y' : 'x');
       const p = city.project(tx, ty);
       return { truck: { sprite: sp, x: Math.round(p.x - sp.cx), y: Math.round(p.y - sp.cy), wx: p.x, wy: p.y, depth: tx + ty } };
+    }
+    if (b.state === 'abandoned') {
+      // A chain-link fence, sagging and torn in places, along the lot's two
+      // front edges, and a keep-out notice inside the corner.
+      const e = 0.1;
+      const fence = [];
+      const piece = (axis, x, y, i) => {
+        const h = hash2(i, axis === 'x' ? 1 : 2, b.depth * 31);
+        if (h < 0.12) return; // a panel gone altogether
+        const sp = fenceSprite(axis, h < 0.3 ? 2 : h < 0.55 ? 1 : 0);
+        const p = city.project(x, y);
+        const mid = axis === 'x' ? x + 0.5 + y : x + y + 0.5;
+        fence.push({ x: Math.round(p.x - sp.cx), y: Math.round(p.y - sp.cy), depth: mid, img: sp.canvas });
+      };
+      for (let i = 0; i < n; i++) {
+        piece('x', x0 + i, y0 + n - e, i);
+        piece('y', x0 + n - e, y0 + i, i);
+      }
+      const sign = signSprite();
+      // Between the building (even a landmark filling its lot) and the
+      // fence, and drawn after the one and before the other.
+      const q = city.project(x0 + n - 0.18, y0 + n - 0.18);
+      fence.push({ x: Math.round(q.x - sign.cx), y: Math.round(q.y - sign.cy), depth: x0 + y0 + 2 * n - 0.7, img: sign.canvas });
+      return { fence };
     }
     return {};
   }

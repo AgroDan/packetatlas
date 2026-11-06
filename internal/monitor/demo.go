@@ -50,7 +50,9 @@ func (d *demoChecker) Check(ctx context.Context) Result {
 	if r.Float64() < 0.03 {
 		d.level *= 3
 	}
-	if d.outage == 0 && r.Float64() < 0.015 {
+	if d.target.Abandoned {
+		d.outage = 1 // switched off for good
+	} else if d.outage == 0 && r.Float64() < 0.015 {
 		d.outage = 2 + r.IntN(6)
 	}
 
@@ -59,6 +61,9 @@ func (d *demoChecker) Check(ctx context.Context) Result {
 		d.outage--
 		res.State = StateDown
 		res.Err = "simulated outage"
+		if d.target.Abandoned {
+			res.Err = "simulated: switched off"
+		}
 	} else if r.Float64() < 0.05 {
 		res.State = StateDegraded
 		res.LatencyMs *= 15
